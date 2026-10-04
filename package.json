@@ -1,0 +1,105 @@
+{
+  "name": "dsh-compaction-fidelity",
+  "version": "0.2.0-rc.2.plugin.1.16",
+  "description": "dsh-compaction-fidelity: cross-lingual fidelity fingerprints + project cognition anchors + dynamic compaction line for DSH.",
+  "license": "MIT",
+  "type": "module",
+  "icon": "./icon.svg",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./engine": "./src/engine.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/**",
+    "lib/**",
+    "scripts/**",
+    "preset/**",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
+    "licenses/**",
+    "README.md",
+    "README.zh.md",
+    "THIRD-PARTY-NOTICES.md",
+    "LICENSE",
+    "REFERENCES.md",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session"
+      ]
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-agent-preset": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-compaction": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-compaction-basic": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-util-values": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-preset": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-basic": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-home-paths": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-util-values": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/index.mjs && node --check src/engine.mjs && node --check src/fingerprint.mjs && node --check src/summarizer.mjs && node --check src/project-index.mjs && node --check src/range.mjs && node --check src/state.mjs && node --check src/util.mjs && node --check lib/client.js && node --check src/constraint-ledger.mjs && node --check src/fidelity-gate.mjs && node --check src/architecture-doc.mjs",
+    "generate-patch": "node scripts/generate-preset-patch.mjs",
+    "verify:local": "node scripts/verify-local.mjs",
+    "patch:dsh": "node scripts/patch-dsh-runtime.mjs"
+  }
+}

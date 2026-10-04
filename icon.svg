@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Compaction-Fidelity compaction">
+  <title>Compaction-Fidelity</title>
+  <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 6.5 12 3l8 3.5-8 3.5-8-3.5Z" />
+    <path d="M4 11.5 12 15l8-3.5" />
+    <path d="M4 16.5 12 20l8-3.5" />
+    <path d="M12 10v10" />
+  </g>
+  <circle cx="12" cy="10" r="1.6" fill="currentColor" />
+</svg>

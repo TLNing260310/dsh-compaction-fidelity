@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Compaction-Fidelity 压缩",
+    "description": "绝对阈值上下文压缩，叠加持久化 Compaction-Fidelity 项目认知与架构级回查锚点。"
+  }
+}
