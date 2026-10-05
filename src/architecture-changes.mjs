@@ -158,6 +158,7 @@ export function writeArchitectureBaseline(cwd, scope, baseline, indexDir = ".dsh
 export function computeArchitectureBaseline(cwd, scope, options = {}) {
   const normalizedScope = normalizeRel(scope) || ".";
   const scopeRoot = normalizedScope === "." ? cwd : join(cwd, normalizedScope);
+  const filter = typeof options.filterFile === "function" ? options.filterFile : null;
   const index = buildIndex(scopeRoot, {
     indexDir: options.indexDir ?? ".dsh/compaction-fidelity",
     maxFiles: options.maxFiles ?? 20000,
@@ -170,6 +171,7 @@ export function computeArchitectureBaseline(cwd, scope, options = {}) {
     if (!isSemanticFile(relativeFile)) continue;
     if (options.docName && basename(relativeFile) === options.docName) continue;
     const workspaceFile = normalizedScope === "." ? relativeFile : normalizedScope + "/" + relativeFile;
+    if (filter !== null && !filter(workspaceFile)) continue;
     let mtimeMs = 0;
     try {
       mtimeMs = statSync(join(scopeRoot, relativeFile)).mtimeMs;
@@ -186,7 +188,7 @@ export function computeArchitectureBaseline(cwd, scope, options = {}) {
   return { at: Date.now(), head: gitInfo?.head ?? null, gitRoot: gitInfo?.root ?? null, files };
 }
 
-function walkSemanticFiles(root, scope, maxFiles) {
+function walkSemanticFiles(root, scope, maxFiles, filter) {
   const out = [];
   const base = scope === "." ? root : join(root, scope);
   const stack = [base];
@@ -209,6 +211,7 @@ function walkSemanticFiles(root, scope, maxFiles) {
       if (!entry.isFile()) continue;
       const relativeFile = normalizeRel(join(dir, entry.name).slice(root.length + 1));
       if (!isSemanticFile(relativeFile)) continue;
+      if (typeof filter === "function" && !filter(relativeFile)) continue;
       try {
         const stat = statSync(join(dir, entry.name));
         out.push({ file: relativeFile, size: stat.size, mtimeMs: stat.mtimeMs, absolute: join(dir, entry.name) });
@@ -222,7 +225,7 @@ function walkSemanticFiles(root, scope, maxFiles) {
 
 function computeCurrentHashes(cwd, scope, baseline, options) {
   const maxHashFiles = options.maxHashFiles ?? 3000;
-  const files = walkSemanticFiles(cwd, scope, options.maxFiles ?? 20000);
+  const files = walkSemanticFiles(cwd, scope, options.maxFiles ?? 20000, options.filterFile);
   const current = new Map();
   for (const entry of files) {
     const previous = baseline.files?.[entry.file] ?? null;
@@ -255,6 +258,7 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
   const docName = options.docName ?? "ARCHITECTURE.md";
   const singleFileChangeThreshold = options.singleFileChangeThreshold ?? 300;
   const baseline = readArchitectureBaseline(cwd, scope, indexDir);
+  const filter = typeof options.filterFile === "function" ? options.filterFile : null;
   if (baseline !== null) {
     if (baseline.gitRoot && baseline.head && isGitRepository(baseline.gitRoot)) {
       const lineMap = new Map();
@@ -265,6 +269,7 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
       const addRepoPath = (file, lines) => {
         const workspaceFile = toWorkspace(file);
         if (workspaceFile === null || !inScope(workspaceFile, scope) || !isSemanticFile(workspaceFile)) return;
+        if (filter !== null && !filter(workspaceFile)) return;
         lineMap.set(workspaceFile, Math.max(lineMap.get(workspaceFile) ?? 0, lines));
       };
       for (const file of gitStatusPaths(baseline.gitRoot, ".")) addRepoPath(file, 0);
@@ -290,7 +295,8 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
     return { method: "hash", score: scored.score, changedFiles, forced: forced || scored.forced, baselineFound: true };
   }
   const sinceMs = Number.isFinite(options.sinceMs) ? options.sinceMs : Date.now();
-  const count = countChangedFilesSince(cwd, scope, sinceMs, { maxFiles: options.maxFiles, exclude: [docName] });
+  const count = countChangedFilesSince(cwd, scope, sinceMs, { maxFiles: options.maxFiles, exclude: [docName], filterFile: filter });
   return { method: "mtime", score: count, changedFiles: [], forced: false, baselineFound: false };
 }
+
 

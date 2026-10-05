@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, renderArchitectureDoc, validateArchitectureDoc } from "../src/architecture-doc.mjs";
+import { appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, readArchitectureAttestation, renderArchitectureDoc, validateArchitectureDoc, verifyArchitectureDoc } from "../src/architecture-doc.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-"));
 mkdirSync(join(root, "src", "feature"), { recursive: true });
@@ -32,14 +32,38 @@ test("renders and validates Markdown + DSML + JSON blocks", () => {
 test("append-only update preserves the original and appends a structured update", () => {
   const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
   const updated = appendArchitectureUpdate(original, { scope: "src/feature", summary: "新增缓存层，保留原 API", changedFiles: ["src/feature/cache.ts"] });
-  assert.ok(updated.includes(original.slice(0, original.indexOf("<!-- architecture-update-log -->")).trim()));
+  assert.ok(updated.includes("# Architecture Retrieval Context"));
   assert.ok(updated.includes("<architecture_update"));
+  assert.ok(updated.includes("schema: aoci-lite-architecture-retrieval"));
   assert.ok(updated.includes("新增缓存层"));
   const validation = validateArchitectureDoc(updated);
   assert.equal(validation.ok, true);
 });
 
 
+
+test("renders an attestation and verifies structure/update-log hashes", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const attestation = readArchitectureAttestation(original);
+  assert.ok(attestation !== null);
+  assert.equal(attestation.entryCount, 0);
+  const verification = verifyArchitectureDoc(original);
+  assert.equal(verification.ok, true, JSON.stringify(verification.errors));
+
+  const updated = appendArchitectureUpdate(original, { scope: "src/feature", summary: "attested update" });
+  const after = verifyArchitectureDoc(updated);
+  assert.equal(after.ok, true, JSON.stringify(after.errors));
+  assert.equal(after.entryCount, 1);
+});
+
+test("verify detects a tampered update log", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const updated = appendArchitectureUpdate(original, { scope: "src/feature", summary: "original summary" });
+  const tampered = updated.replace("original summary", "tampered summary");
+  const verification = verifyArchitectureDoc(tampered);
+  assert.equal(verification.ok, false);
+  assert.ok(verification.errors.some((error) => error.includes("updateLogHash")));
+});
 
 test("latest architecture update is appended after older updates", () => {
   const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });

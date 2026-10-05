@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.23
+
+Managed scope include/exclude, architecture attestation, and structure/update-log consistency.
+
+- Added architecture-scopes.json v2 with per-scope include/exclude glob rules and legacy array migration.
+- Architecture include/exclude now filters generated documents, baselines, semantic change detection, and anchor injection.
+- Added architecture include / exclude / manage / unmanage tool actions and commands.
+- Added an architecture attestation block with revision, structureHash, updateLogHash, and entryCount.
+- Added architecture verify and status consistency reporting; update/refresh keep the attestation current.
+- Added architecture-registry.mjs and tests for glob rules, legacy migration, filtered baselines, and buildIndex filtering.
+- Explicitly out of scope remains: observe, phase_transition inference, MCP server, and token-level Whole-Index budgets.
+
 ## 0.2.0-rc.2.plugin.1.22
 
 Audit corrections for calibration sampling and reminder identity.

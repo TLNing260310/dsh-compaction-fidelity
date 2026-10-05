@@ -1,6 +1,6 @@
 {
   "name": "dsh-compaction-fidelity",
-  "version": "0.2.0-rc.2.plugin.1.22",
+  "version": "0.2.0-rc.2.plugin.1.23",
   "description": "dsh-compaction-fidelity: cross-lingual fidelity fingerprints + project cognition anchors + dynamic compaction line for DSH.",
   "license": "MIT",
   "type": "module",
@@ -97,7 +97,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/engine.mjs && node --check src/fingerprint.mjs && node --check src/summarizer.mjs && node --check src/project-index.mjs && node --check src/range.mjs && node --check src/state.mjs && node --check src/util.mjs && node --check lib/client.js && node --check src/constraint-ledger.mjs && node --check src/fidelity-gate.mjs && node --check src/architecture-doc.mjs && node --check src/architecture-io.mjs && node --check src/architecture-changes.mjs && node --check src/reminder-state.mjs && node --check src/fidelity-calibration.mjs",
+    "check": "node --check src/index.mjs && node --check src/engine.mjs && node --check src/fingerprint.mjs && node --check src/summarizer.mjs && node --check src/project-index.mjs && node --check src/range.mjs && node --check src/state.mjs && node --check src/util.mjs && node --check lib/client.js && node --check src/constraint-ledger.mjs && node --check src/fidelity-gate.mjs && node --check src/architecture-doc.mjs && node --check src/architecture-io.mjs && node --check src/architecture-changes.mjs && node --check src/reminder-state.mjs && node --check src/fidelity-calibration.mjs && node --check src/architecture-registry.mjs",
     "generate-patch": "node scripts/generate-preset-patch.mjs",
     "verify:local": "node scripts/verify-local.mjs",
     "patch:dsh": "node scripts/patch-dsh-runtime.mjs"

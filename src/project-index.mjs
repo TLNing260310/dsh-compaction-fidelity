@@ -206,6 +206,7 @@ function walkWorkspace(root, options) {
         continue;
       }
       if (!entry.isFile()) continue;
+      if (typeof options.filterFile === 'function' && !options.filterFile(rel)) continue;
       let stat;
       try {
         stat = statSync(join(root, rel));
@@ -432,6 +433,7 @@ function buildIndexData(root, options = {}) {
   const files = walkWorkspace(root, {
     maxFiles: options.maxFiles ?? 20000,
     maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
+    ...(typeof options.filterFile === 'function' ? { filterFile: options.filterFile } : {}),
   });
   resolveImports(root, files);
   const importedBy = new Map();
@@ -713,6 +715,8 @@ export function briefForRoot(root, indexDir = DEFAULT_INDEX_DIR) {
   const index = loadIndex(root, indexDir);
   return index === null ? null : buildBrief(index);
 }
+
+
 
 
 

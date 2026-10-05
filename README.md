@@ -29,6 +29,8 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Lossless retrieval: anchors are pointers; `compaction-fidelity-brief` and `compaction-fidelity-lookup` retrieve exact project structure after compaction.
 - AOCI-inspired architecture refresh gate: `status` / `refresh` commands, persistent scope registry, context-compaction priority collection, Git + content-hash change detection, weighted semantic score, and append-only updates whose latest entry is last; architecture writes use a cross-process lock + CAS + atomic rename.
 - One master switch: installing the bundle enables everything; removing it restores the built-in DSH presets; `/compaction-fidelity on|off` switches the whole plugin at runtime.
+- Managed scope rules: `architecture include <scope> <glob>` and `architecture exclude <scope> <glob>` store include/exclude filters in `.dsh/compaction-fidelity/architecture-scopes.json`; filtered scopes drive generated docs, baselines, change detection, and anchor injection.
+- Architecture attestation: every ARCHITECTURE.md carries revision + structureHash + updateLogHash + entryCount; `architecture status` and `architecture verify` report mismatches.
 - A/B fingerprint calibration: raw-summary metrics and post-compensation metrics are compared per language group in `.dsh/compaction-fidelity/fidelity-calibration.json`; each sample records `dominantLanguage`, `mixedRatio`, `cjkRatio`, and `latinRatio`. Mixed sessions use a `mixed:<dominant>` group. Calibrated levels appear after 8 samples for a group; the gate still uses the raw deterministic level.
 - Anchor quality: anchors are deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
 - Persistent reminder backoff: architecture refresh reminders back off 0 -> 5 minutes -> 30 minutes, then become status-only; state lives in `.dsh/compaction-fidelity/architecture-reminders.json`.
@@ -106,7 +108,7 @@ The script restores a `compaction-basic` safety net in `minimal` and installs a 
 /compaction-fidelity anchors <file>
 /compaction-fidelity lookup <query>
 /compaction-fidelity purge --yes
-/compaction-fidelity architecture check | read | create | refresh | status | update [scope] [summary]
+/compaction-fidelity architecture check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage [scope] [summary|pattern]
 ```
 
 Tools: `compaction-fidelity-brief`, `compaction-fidelity-lookup`, `compaction-fidelity-architecture`.
@@ -123,7 +125,7 @@ The 188K-line Go governance engine, the stdio MCP server and its 9 MCP tools, th
 Explicitly not ported or not planned:
 
 - FRAS semantic authoring, Go governance state machine, stdio MCP server, full Attestation/Ledger/Recovery state machine.
-- Managed Scope tri-role `index / observe / exclude`: only `include / exclude` is considered useful for this plugin; `observe` is not planned.
+- Managed Scope tri-role `index / observe / exclude`: `include / exclude` is implemented; `observe` remains out of scope.
 - `phase_transition` inference: only `semantic_threshold`, `context_compaction`, and explicit architecture commands trigger cognition refresh.
 - Token-level Whole-Index budget (120K/180K/240K): the plugin keeps per-document (4000 chars) and total (8000 chars) retrieval budgets instead.
 - Database credentials/evidence layer: the plugin never reads `.env` or secret files.
@@ -142,7 +144,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.22`
+- Current: `0.2.0-rc.2.plugin.1.23`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`

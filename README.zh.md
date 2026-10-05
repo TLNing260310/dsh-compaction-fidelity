@@ -183,7 +183,7 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 | stdio MCP Server / 9 个 MCP 工具 | 改 DSH 原生工具与命令 | 不需要额外进程 |
 | FRAS/Attestation/Ledger/Recovery 全套治理状态机 | 只保留 index + baseline + verify | 依赖组织治理约定 |
 | Agent 逐批撰写、300K token Whole-Index | 确定性规则索引 + 按需回查 | 防止索引本身挤占上下文 |
-| Managed Scope 三角色 index/observe/exclude | 仅规划 include/exclude | observe 中间态在宿主内插件收益低 |
+| Managed Scope 三角色 index/observe/exclude | include/exclude 已实现 | observe 仍不纳入 |
 | phase_transition 阶段推断 | 不采用自动推断 | 仅保留显式命令、语义分与压缩触发 |
 | Token 级 Whole-Index 预算 120K/180K/240K | 保留单文档 4000 字符 + 总量 8000 字符检索预算 | 避免从压缩保真层滑向索引治理 |
 | 完整 tree-sitter 调用图 | JS/TS/Python/Go/Rust 启发式 import 图 | 第一版不引入语言服务器 |
@@ -214,7 +214,7 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 /compaction-fidelity anchors <file>            输出某文件的架构级锚点
 /compaction-fidelity lookup <query>            按路径/模块/命令关键词搜索索引
 /compaction-fidelity purge --yes               删除当前工作区 .dsh/compaction-fidelity
-/compaction-fidelity architecture check | read | create | refresh | status | update [scope] [summary]
+/compaction-fidelity architecture check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage [scope] [summary|pattern]
 ```
 
 ### 模型工具
@@ -298,7 +298,7 @@ TESTBOX
 ```
 
 - DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
-- 当前版本：0.2.0-rc.2.plugin.1.22。
+- 当前版本：0.2.0-rc.2.plugin.1.23。
 - 插件本体为 1.0；功能迭代递增为 1.1、2.0。
 
 - DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。
@@ -427,6 +427,8 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
   - 可写入 AOCI 风格缩写/模块约定，便于用少量字母定位模块；
 - AOCI 风格认知刷新门控：
   - 对齐状态：`/compaction-fidelity architecture status <scope>`；
+- **Managed Scope 规则**：`architecture include <scope> <glob>` 与 `architecture exclude <scope> <glob>` 把 include/exclude 过滤器写入 `.dsh/compaction-fidelity/architecture-scopes.json`；规则同时作用于生成文档、baseline、变更检测与锚点注入。
+- **架构文档 Attestation**：每份 ARCHITECTURE.md 带 revision、structureHash、updateLogHash、entryCount；`architecture status` 与 `architecture verify` 会报告不一致。
   - 语义阈值：scope 内自上次文档更新后的语义变化分达到 `architectureRefreshThreshold`（默认 30）时，插件会在 pre-step 注入刷新提示；单文件变更达到 `architectureSingleFileChangeThreshold`（默认 300）时强制触发；
   - 上下文压缩：压缩输入引用到 ARCHITECTURE.md 时，摘要指令会带 `<cognition_refresh trigger="context_compaction">`，并按引用文档、已登记 scope、根文档的优先级收集；
   - 结构刷新：`/compaction-fidelity architecture refresh <scope>` 重建模块图、入口点与命令锚点，同时保留原有 Update Log；

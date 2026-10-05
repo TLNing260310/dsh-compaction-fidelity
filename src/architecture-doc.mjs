@@ -1,7 +1,7 @@
 // Folder-scoped AOCI-style architecture retrieval document.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { isSafeRelativePath, toPosix } from "./util.mjs";
+import { isSafeRelativePath, sha256, toPosix } from "./util.mjs";
 
 export const DEFAULT_ARCHITECTURE_DOC = "ARCHITECTURE.md";
 
@@ -104,7 +104,7 @@ export function renderArchitectureDoc(options = {}) {
   const constraints = (options.constraints ?? []).map((item, index) => ({ id: item.id ?? "c" + (index + 1), kind: item.kind ?? "hard", text: item.text ?? String(item) }));
   const decisions = (options.decisions ?? []).map((item, index) => ({ id: item.id ?? "d" + (index + 1), decision: item.decision ?? String(item), reason: item.reason ?? "", status: item.status ?? "active" }));
   const notes = (options.notes ?? []).map((text) => String(text));
-  return [
+  const rendered = [
     "---",
     "schema: aoci-lite-architecture-retrieval",
     "version: 1",
@@ -147,9 +147,10 @@ export function renderArchitectureDoc(options = {}) {
     "</architecture_retrieval>",
     "",
   ].join("\n");
+  return finalizeArchitectureDoc(rendered);
 }
 
-export function appendArchitectureUpdate(text, update = {}) {
+function appendArchitectureUpdateRaw(text, update = {}) {
   const marker = "<!-- architecture-update-log -->";
   const at = update.at ?? new Date().toISOString();
   const scope = update.scope ?? ".";
@@ -176,7 +177,7 @@ export function appendArchitectureUpdate(text, update = {}) {
   return text.trimEnd() + "\n\n## Update Log\n\n" + marker + "\n\n" + block;
 }
 
-export function preserveArchitectureUpdateLog(oldText, newText) {
+function preserveArchitectureUpdateLogRaw(oldText, newText) {
   const marker = "<!-- architecture-update-log -->";
   const closingTag = "</architecture_retrieval>";
   const oldStart = oldText.indexOf(marker);
@@ -189,10 +190,113 @@ export function preserveArchitectureUpdateLog(oldText, newText) {
   return newText.slice(0, newStart) + oldLog + newText.slice(newEnd);
 }
 
+export function appendArchitectureUpdate(text, update = {}) {
+  return finalizeArchitectureDoc(appendArchitectureUpdateRaw(text, update));
+}
+
+export function preserveArchitectureUpdateLog(oldText, newText) {
+  return finalizeArchitectureDoc(preserveArchitectureUpdateLogRaw(oldText, newText));
+}
+
+const ATTESTATION_RE = /<architecture_attestation>([\s\S]*?)<\/architecture_attestation>\s*/g;
+
+function stripAttestation(text) {
+  return String(text ?? "").replace(ATTESTATION_RE, "");
+}
+
+function structureSection(text) {
+  const value = String(text ?? "");
+  const markerIndex = value.indexOf("<!-- architecture-update-log -->");
+  const closingIndex = value.indexOf("</architecture_retrieval>");
+  const end = markerIndex >= 0 ? markerIndex : closingIndex >= 0 ? closingIndex : value.length;
+  return stripAttestation(value.slice(0, end));
+}
+
+function updateLogSection(text) {
+  const value = String(text ?? "");
+  const markerIndex = value.indexOf("<!-- architecture-update-log -->");
+  const closingIndex = value.indexOf("</architecture_retrieval>");
+  if (markerIndex < 0 || closingIndex < 0) return "";
+  return stripAttestation(value.slice(markerIndex, closingIndex));
+}
+
+export function readArchitectureAttestation(text) {
+  const match = /<architecture_attestation>([\s\S]*?)<\/architecture_attestation>/.exec(String(text ?? ""));
+  if (match === null) return null;
+  try {
+    const parsed = JSON.parse(match[1].trim());
+    return parsed !== null && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildArchitectureAttestation(text) {
+  const value = String(text ?? "");
+  const previous = readArchitectureAttestation(value);
+  const entryCount = (value.match(/<architecture_update\b/g) ?? []).length;
+  return {
+    revision: Number.isInteger(previous?.revision) ? previous.revision + 1 : 1,
+    structureHash: sha256(structureSection(value)),
+    updateLogHash: sha256(updateLogSection(value)),
+    entryCount,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function renderAttestationBlock(attestation) {
+  return "<architecture_attestation>\n" + JSON.stringify(attestation, null, 2) + "\n</architecture_attestation>";
+}
+
+export function upsertArchitectureAttestation(text, attestation = undefined) {
+  const value = String(text ?? "").replace(ATTESTATION_RE, "").replace(/\n{3,}/g, "\n\n");
+  const block = renderAttestationBlock(attestation ?? buildArchitectureAttestation(value));
+  const frontmatter = value.match(/^---\n[\s\S]*?\n---\n/);
+  if (frontmatter !== null) return value.slice(0, frontmatter[0].length) + "\n" + block + "\n" + value.slice(frontmatter[0].length);
+  return block + "\n\n" + value;
+}
+
+export function finalizeArchitectureDoc(text) {
+  return upsertArchitectureAttestation(text);
+}
+
+export function verifyArchitectureDoc(text) {
+  const value = String(text ?? "");
+  const validation = validateArchitectureDoc(value);
+  const errors = [...validation.errors];
+  const attestation = readArchitectureAttestation(value);
+  const expected = buildArchitectureAttestation(value);
+  if (attestation === null) {
+    errors.push("missing architecture_attestation");
+  } else {
+    for (const key of ["structureHash", "updateLogHash", "entryCount"]) {
+      if (attestation[key] !== expected[key]) errors.push("attestation " + key + " mismatch");
+    }
+  }
+  const markerIndex = value.indexOf("<!-- architecture-update-log -->");
+  const updateCount = (value.match(/<architecture_update\b/g) ?? []).length;
+  const closeCount = (value.match(/<\/architecture_update>/g) ?? []).length;
+  if (markerIndex < 0 && updateCount > 0) errors.push("updates exist without update-log marker");
+  if (markerIndex >= 0) {
+    const firstUpdate = value.indexOf("<architecture_update");
+    if (firstUpdate >= 0 && firstUpdate < markerIndex) errors.push("update appears before update-log marker");
+  }
+  if (updateCount !== closeCount) errors.push("unbalanced architecture_update tags");
+  return {
+    ok: errors.length === 0,
+    errors,
+    attestation,
+    expected,
+    entryCount: updateCount,
+    structureHash: expected.structureHash,
+    updateLogHash: expected.updateLogHash,
+  };
+}
 export function countChangedFilesSince(root, scope, sinceMs, options = {}) {
   const base = resolve(root, scope === "." || scope === undefined ? "" : String(scope));
   const maxFiles = Number.isInteger(options.maxFiles) && options.maxFiles > 0 ? options.maxFiles : 20000;
   const exclude = new Set((options.exclude ?? []).map((item) => String(item).toLowerCase()));
+  const filter = typeof options.filterFile === "function" ? options.filterFile : null;
   const ignoreDirs = new Set(["node_modules", ".git", ".dsh", "dist", "build", "target", "coverage", ".next", ".cache"]);
   const semanticExtensions = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".py", ".go", ".rs", ".java", ".kt", ".kts", ".cs", ".php", ".rb", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp", ".sql", ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".md", ".mdx", ".sh", ".ps1", ".bat", ".cmd"]);
   const stack = [base];
@@ -219,6 +323,10 @@ export function countChangedFilesSince(root, scope, sinceMs, options = {}) {
       const dot = lowerName.lastIndexOf(".");
       const extension = dot >= 0 ? lowerName.slice(dot) : "";
       if (!semanticExtensions.has(extension) && lowerName !== "dockerfile" && lowerName !== "makefile") continue;
+      if (filter !== null) {
+        const relativeFile = toPosix(relative(resolve(root), join(dir, entry.name)));
+        if (!filter(relativeFile)) continue;
+      }
       try {
         if (statSync(join(dir, entry.name)).mtimeMs > sinceMs) changed += 1;
       } catch {
@@ -239,5 +347,10 @@ export function validateArchitectureDoc(text) {
   }
   return { ok: errors.length === 0, errors, jsonBlocks };
 }
+
+
+
+
+
 
 

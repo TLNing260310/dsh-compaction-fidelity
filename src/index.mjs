@@ -28,12 +28,13 @@ import {
 } from './state.mjs';
 import { clampText, isSafeRelativePath, normalizeRelPath, toPosix } from './util.mjs';
 import { PLUGIN_NAME, PRODUCER_SOURCE } from './message-source.mjs';
-import { architectureDocExists, appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc } from './architecture-doc.mjs';
+import { appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, verifyArchitectureDoc } from './architecture-doc.mjs';
 
 import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './architecture-io.mjs';
 import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from './reminder-state.mjs';
+import { createWorkspaceFileFilter, managedScopeRules, matchesScopeRules, readArchitectureRegistry, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, updateArchitectureScopeRules } from './architecture-registry.mjs';
 export const inject = ['commands', 'tools'];
 
 const TOOL_ID = 'dsh-compaction-fidelity#command';
@@ -143,40 +144,32 @@ export function apply(ctx, config = {}) {
   };
   const buildArchitectureIndex = (cwd, scope) => {
     const normalizedScope = toPosix(String(scope ?? ".")).replace(/\/+$/, "");
+    const registry = readArchitectureRegistry(cwd, cfg.indexDir);
+    const rules = managedScopeRules(registry, normalizedScope);
+    const filterFile = rules === null || rules === undefined ? undefined : (relativeFile) => matchesScopeRules(relativeFile, rules);
     return normalizedScope.length === 0 || normalizedScope === "."
-      ? ensureIndex(cwd, indexOptions)
-      : buildIndex(join(cwd, normalizedScope), { ...indexOptions, write: false });
+      ? ensureIndex(cwd, filterFile === undefined ? indexOptions : { ...indexOptions, filterFile })
+      : buildIndex(join(cwd, normalizedScope), { ...indexOptions, write: false, ...(filterFile === undefined ? {} : { filterFile }) });
   };
+
   const architectureScopes = new Map();
-  const architectureRegistryPath = (cwd) => join(cwd, cfg.indexDir, "architecture-scopes.json");
-  const readArchitectureScopeRegistry = (cwd) => {
-    try {
-      const file = architectureRegistryPath(cwd);
-      if (!existsSync(file)) return [];
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
-      return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
-    } catch {
-      return [];
-    }
-  };
-  const writeArchitectureScopeRegistry = (cwd, scopes) => {
-    try {
-      const dir = join(cwd, cfg.indexDir);
-      mkdirSync(dir, { recursive: true });
-      atomicWriteArchitectureFile(architectureRegistryPath(cwd), JSON.stringify([...scopes].sort(), null, 2));
-    } catch {
-      // best-effort persistence only
-    }
-  };
+  const getArchitectureRegistry = (cwd) => readArchitectureRegistry(cwd, cfg.indexDir);
   const rememberArchitectureScope = (agent, scope) => {
     const cwd = workspaceOf(agent);
     const session = String(agent?.session?.id ?? "session");
     const normalized = toPosix(String(scope ?? ".")).replace(/\/+$/, "") || ".";
-    const known = architectureScopes.get(session) ?? new Set(readArchitectureScopeRegistry(cwd));
-    known.add(normalized);
-    architectureScopes.set(session, known);
-    writeArchitectureScopeRegistry(cwd, known);
+    const registry = rememberScopeInRegistry(cwd, cfg.indexDir, normalized, { docName: cfg.architectureDocName });
+    architectureScopes.set(session, new Set(Object.keys(registry.scopes)));
+    return registry;
   };
+  const architectureManagedFilter = (cwd, scope) => {
+    const registry = getArchitectureRegistry(cwd);
+    const rules = managedScopeRules(registry, scope);
+    return rules === null || rules === undefined ? null : createWorkspaceFileFilter(registry, scope);
+  };
+  const architectureScopeRules = (cwd, scope) => managedScopeRules(getArchitectureRegistry(cwd), scope);
+  const listArchitectureScopes = (cwd) => Object.keys(getArchitectureRegistry(cwd).scopes);
+
   const refreshArchitectureDocument = (cwd, scope) => {
     const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
     let existed = false;
@@ -200,6 +193,7 @@ export function apply(ctx, config = {}) {
         maxFileBytes: cfg.maxFileBytes,
         docName: cfg.architectureDocName,
       });
+        filterFile: architectureManagedFilter(cwd, scope) ?? undefined,
       writeArchitectureBaseline(cwd, scope, baseline, cfg.indexDir);
     } catch (error) {
       ctx.logger?.warn?.("compaction-fidelity architecture baseline failed: " + (error instanceof Error ? error.message : String(error)));
@@ -339,12 +333,13 @@ export function apply(ctx, config = {}) {
 
   const architectureTool = defineTool({
     name: "compaction-fidelity-architecture",
-    description: "Check, read, create, or append updates to a folder-scoped ARCHITECTURE.md retrieval document. Use only after asking the user whether to create the document.",
+    description: "Check, read, create, verify, or append updates to a folder-scoped ARCHITECTURE.md retrieval document, and manage scope include/exclude rules. Use only after asking the user whether to create the document.",
     parameters: {
-      action: { type: "string", description: "check | read | create | update" },
+      action: { type: "string", description: "check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage" },
       scope: { type: "string", description: "Workspace-relative task folder. Defaults to the workspace root." },
       summary: { type: "string", description: "Structured update summary for action=update." },
       changedFiles: { type: "string", description: "Optional comma-separated changed files for action=update." },
+      pattern: { type: "string", description: "Comma-separated glob pattern(s) for action=include, exclude, or unmanage." },
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { text: { type: "string", required: true } } },
@@ -359,6 +354,24 @@ export function apply(ctx, config = {}) {
       try {
         const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
         if (action === "check") return { text: existsSync(target.absolute) ? "exists: " + target.relative : "missing: " + target.relative };
+        const patterns = String(args.pattern ?? "").split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
+        if (action === "manage") {
+          const rules = architectureScopeRules(cwd, scope);
+          return { text: rules === null ? "scope not managed: " + scope : "scope=" + scope + "; include=" + JSON.stringify(rules.include ?? []) + "; exclude=" + JSON.stringify(rules.exclude ?? []) };
+        }
+        if (action === "include" || action === "exclude" || action === "unmanage") {
+          if (action !== "unmanage" && patterns.length === 0) return { text: "action=" + action + " requires pattern." };
+          let rules = null;
+          if (action === "unmanage" && patterns.length === 0) {
+            removeArchitectureScope(cwd, cfg.indexDir, scope);
+          } else {
+            updateArchitectureScopeRules(cwd, cfg.indexDir, scope, { include: action === "include" ? patterns : [], exclude: action === "exclude" ? patterns : [], removeInclude: action === "unmanage" ? patterns : [], removeExclude: action === "unmanage" ? patterns : [] });
+            rememberArchitectureScope(exec.agent, scope);
+            rules = architectureScopeRules(cwd, scope);
+            if (existsSync(target.absolute)) refreshArchitectureDocument(cwd, scope);
+          }
+          return { text: action + ": scope=" + scope + "; include=" + JSON.stringify(rules?.include ?? []) + "; exclude=" + JSON.stringify(rules?.exclude ?? []) };
+        }
         if (action === "read") {
           const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
           return doc === null ? { text: "missing: " + target.relative } : { text: clampText(doc.text, 8000) };
@@ -377,9 +390,16 @@ export function apply(ctx, config = {}) {
           const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
           if (doc === null) return { text: "missing: " + target.relative };
           const stat = statSync(target.absolute);
-          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000 });
+          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+          const docVerification = verifyArchitectureDoc(doc.text);
           const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-          return { text: "status: " + (aligned ? "aligned" : "stale") + "; score=" + change.score + "; method=" + change.method + "; forced=" + change.forced + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() };
+          return { text: "status: " + (aligned ? "aligned" : "stale") + "; score=" + change.score + "; method=" + change.method + "; forced=" + change.forced + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() + "; attestation=" + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + "; consistent=" + docVerification.ok + "; entries=" + docVerification.entryCount };
+        }
+        if (action === "verify") {
+          const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
+          if (doc === null) return { text: "missing: " + target.relative };
+          const verification = verifyArchitectureDoc(doc.text);
+          return { text: "verify: " + (verification.ok ? "ok" : "failed") + "; entries=" + verification.entryCount + "; structureHash=" + verification.structureHash + "; updateLogHash=" + verification.updateLogHash + "; errors=" + verification.errors.join(" | ") };
         }
         if (action === "update") {
           const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
@@ -390,7 +410,7 @@ export function apply(ctx, config = {}) {
           const mutation = mutateArchitectureDocument(target.absolute, (current) => {
             if (current === null) return null;
             const next = appendArchitectureUpdate(current, { scope, summary, changedFiles });
-            const validation = validateArchitectureDoc(next);
+            const validation = verifyArchitectureDoc(next);
             if (!validation.ok) throw new Error("invalid architecture doc: " + validation.errors.join("; "));
             return next;
           });
@@ -399,7 +419,7 @@ export function apply(ctx, config = {}) {
           if (mutation.changed) updateArchitectureBaseline(cwd, scope);
           return { text: "updated: " + target.relative };
         }
-        return { text: "Unknown action: " + action + " (use check | read | create | refresh | status | update)." };
+        return { text: "Unknown action: " + action + " (use check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage)." };
       } catch (error) {
         return { text: "architecture doc failed: " + (error instanceof Error ? error.message : String(error)) };
       }
@@ -500,6 +520,24 @@ export function apply(ctx, config = {}) {
           try {
             const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
             if (action === 'check') {
+            const patterns = rest.slice(2).join(" ").split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
+            if (action === 'manage') {
+              const rules = architectureScopeRules(cwd, scope);
+              return { kind: 'success', text: rules === null ? `scope 未受管：${scope}` : `scope=${scope}；include=${JSON.stringify(rules.include ?? [])}；exclude=${JSON.stringify(rules.exclude ?? [])}` };
+            }
+            if (action === 'include' || action === 'exclude' || action === 'unmanage') {
+              if (action !== 'unmanage' && patterns.length === 0) return { kind: 'error', text: `用法：/compaction-fidelity architecture ${action} <scope> <pattern>` };
+              let rules = null;
+              if (action === 'unmanage' && patterns.length === 0) {
+                removeArchitectureScope(cwd, cfg.indexDir, scope);
+              } else {
+                updateArchitectureScopeRules(cwd, cfg.indexDir, scope, { include: action === 'include' ? patterns : [], exclude: action === 'exclude' ? patterns : [], removeInclude: action === 'unmanage' ? patterns : [], removeExclude: action === 'unmanage' ? patterns : [] });
+                rules = architectureScopeRules(cwd, scope);
+                if (existsSync(target.absolute)) refreshArchitectureDocument(cwd, scope);
+                rememberArchitectureScope(invocation.agent, scope);
+              }
+              return { kind: 'success', text: `${action}：scope=${scope}；include=${JSON.stringify(rules?.include ?? [])}；exclude=${JSON.stringify(rules?.exclude ?? [])}` };
+            }
               return { kind: 'success', text: existsSync(target.absolute) ? `已存在：${target.relative}` : `不存在：${target.relative}` };
             }
             if (action === 'read') {
@@ -517,9 +555,16 @@ export function apply(ctx, config = {}) {
               const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
               if (doc === null) return { kind: 'error', text: `不存在：${target.relative}` };
               const stat = statSync(target.absolute);
-              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000 });
+              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+              const docVerification = verifyArchitectureDoc(doc.text);
               const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-              return { kind: 'success', text: `对齐状态：${aligned ? "aligned" : "stale"}；变化分=${change.score}；检测=${change.method}；强制=${change.forced}；阈值=${cfg.architectureRefreshThreshold}；更新时间=${new Date(stat.mtimeMs).toISOString()}；路径=${target.relative}` };
+              return { kind: 'success', text: `对齐状态：${aligned ? "aligned" : "stale"}；变化分=${change.score}；检测=${change.method}；强制=${change.forced}；阈值=${cfg.architectureRefreshThreshold}；更新时间=${new Date(stat.mtimeMs).toISOString()}；路径=${target.relative}；attestation=${docVerification.attestation === null ? "missing" : docVerification.attestation.revision}；consistent=${docVerification.ok}；entries=${docVerification.entryCount}` };
+            }
+            if (action === 'verify') {
+              const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
+              if (doc === null) return { kind: 'error', text: '不存在：' + target.relative };
+              const verification = verifyArchitectureDoc(doc.text);
+              return { kind: 'success', text: 'verify：' + (verification.ok ? 'ok' : 'failed') + '；entries=' + verification.entryCount + '；structureHash=' + verification.structureHash + '；updateLogHash=' + verification.updateLogHash + '；errors=' + verification.errors.join(' | ') };
             }
             if (action === 'refresh') {
               const refreshed = refreshArchitectureDocument(cwd, scope);
@@ -534,7 +579,7 @@ export function apply(ctx, config = {}) {
               const mutation = mutateArchitectureDocument(target.absolute, (current) => {
                 if (current === null) return null;
                 const next = appendArchitectureUpdate(current, { scope, summary, changedFiles: [] });
-                const validation = validateArchitectureDoc(next);
+                const validation = verifyArchitectureDoc(next);
                 if (!validation.ok) throw new Error('架构文档校验失败：' + validation.errors.join('; '));
                 return next;
               });
@@ -543,7 +588,7 @@ export function apply(ctx, config = {}) {
               rememberArchitectureScope(invocation.agent, scope);
               return { kind: 'success', text: `已追加更新：${target.relative}` };
             }
-            return { kind: 'error', text: '用法：/compaction-fidelity architecture check | read | create | refresh | status | update <scope> [summary]' };
+            return { kind: 'error', text: '用法：/compaction-fidelity architecture check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage <scope> [summary|pattern]' };
           } catch (error) {
             return { kind: 'error', text: `架构文档命令失败：${error instanceof Error ? error.message : String(error)}` };
           }
@@ -606,7 +651,7 @@ export function apply(ctx, config = {}) {
       '- /compaction-fidelity brief',
       '- /compaction-fidelity anchors <file>',
       '- /compaction-fidelity lookup <query>',
-      '- /compaction-fidelity architecture check | read | create | refresh | status | update [scope] [summary]',
+      '- /compaction-fidelity architecture check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage [scope] [summary|pattern]',
       '- /compaction-fidelity purge --yes',
       '模型工具：compaction-fidelity-brief, compaction-fidelity-lookup, compaction-fidelity-architecture',
     ]);
@@ -716,11 +761,9 @@ export function apply(ctx, config = {}) {
               }
             }
           }
-          if (!architectureScopes.has(askedSession)) {
-            architectureScopes.set(askedSession, new Set(readArchitectureScopeRegistry(askedCwd)));
-          }
-          const knownScopes = architectureScopes.get(askedSession);
-          if (knownScopes !== undefined && knownScopes.size > 0) {
+          const knownScopes = new Set(listArchitectureScopes(askedCwd));
+          architectureScopes.set(askedSession, knownScopes);
+          if (knownScopes.size > 0) {
             for (const scope of knownScopes) {
               const doc = resolveArchitectureDoc(askedCwd, scope, cfg.architectureDocName);
               if (!existsSync(doc.absolute)) continue;
@@ -730,7 +773,7 @@ export function apply(ctx, config = {}) {
               } catch {
                 continue;
               }
-              const change = detectSemanticChanges(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000 });
+              const change = detectSemanticChanges(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
               if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
               const now = Date.now();
               const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);
@@ -793,6 +836,10 @@ export function apply(ctx, config = {}) {
 }
 
 export default { name, inject, apply };
+
+
+
+
 
 
 
