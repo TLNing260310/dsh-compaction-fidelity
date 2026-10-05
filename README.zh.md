@@ -127,8 +127,8 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 | anchors | true | 摘要中注入 Compaction-Fidelity 简览与锚点 |
 | anchorsPerFile | 8 | 每文件最多锚点数 |
 | indexDir | .dsh/compaction-fidelity | 索引目录（工作区相对路径） |
-
 | architectureRefreshThreshold | 30 | scope 内变更文件达到该数量时，pre-step 注入 ARCHITECTURE.md 刷新提示 |
+
 ### 运行时命令
 
 ```text
