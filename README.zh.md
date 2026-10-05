@@ -26,10 +26,34 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - **架构级回查锚点**：修改文件后把该文件的架构级依赖/文档/测试/迁移写入 `.dsh/compaction-fidelity/anchors.md`，并在下一步注入上下文；压缩摘要中也带锚点。
 - **原文不丢失**：锚点只是指针；原始文件与 session log 仍在。`compaction-fidelity-lookup`、`compaction-fidelity-brief` 可在压缩后精确回查。
 - **总开关/总闸**：安装 bundle 即整体启用；卸载即恢复内置 preset；运行时 `/compaction-fidelity on|off` 在插件压缩与官方压缩之间整体切换。
+- **Managed Scope 规则**：include/exclude 过滤器写入 architecture-scopes.json，并作用于生成文档、baseline、变更检测与锚点注入。
+- **架构文档 Attestation**：每份 ARCHITECTURE.md 带 revision、structureHash、updateLogHash、entryCount；status 与 verify 会报告不一致。
+- **哈希归一化**：structureHash / updateLogHash 在 CRLF、行尾空白、连续空行归一化后计算，纯格式刷新不会误报不一致。
+- **排除/恢复语义**：文件被 exclude 期间发生的变化不追踪；re-include 会以当前状态重建 baseline，不会立即误报。
+- **显式对齐检查**：architecture check 直接报告 aligned/stale、语义变化分、检测方式、attestation revision 与一致性。
 - **跨语言保真指纹**：压缩前冻结精确值、CJK 二元语义单元与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
 - **语言策略**：默认 `auto` 跟随会话语言，避免翻译两次；`en` 模式英文写摘要，但用户原话与精确值原样保留、不翻译。
 - **A/B 指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言组分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每条样本包含 `dominantLanguage`、`mixedRatio`、`cjkRatio`、`latinRatio`。中英混合会话进入 `mixed:<主语言>` 组。每个语言组累计 8 个样本后给出校准分级，门控仍使用原始确定性分级。
 - **锚点质量**：锚点按 canonical identity 去重，按关系强度评分，并按类别限流（测试 2、文档 1、数据库 2）。
+
+### 校准数据看板
+
+fidelity-calibration.json 是核心证据资产。静态示例：
+
+```json
+{
+  "samples": [
+    { "calibrationKey": "zh", "dominantLanguage": "zh", "mixedRatio": 0.05, "exactOverall": 0.84, "cjkRecall": 0.79, "structure": 0.92 },
+    { "calibrationKey": "mixed:en", "dominantLanguage": "en", "mixedRatio": 0.42, "exactOverall": 0.71, "cjkRecall": 0.88, "structure": 0.90 }
+  ]
+}
+```
+
+每个语言组累计 8 个样本前，门控继续使用原始确定性 L0-L3 分级；可以把可信会话样本手动合并进这个数组，缩短冷启动时间。
+
+### 与压缩后端的关系
+
+本插件是保真观测层，不替换 summarize()。压缩后端决定保留什么；本层记录精确值、CJK 与结构最终存活多少。与压缩后端在 profile 层共存是可能方向，但尚未验证。
 - **提醒退避持久化**：架构刷新提醒按 0 -> 5 分钟 -> 30 分钟退避，之后只保留 status 可见；状态存于 `.dsh/compaction-fidelity/architecture-reminders.json`。
 
 > 本插件按 DSH Desktop 0.2.0-rc.2 生成并锁定 peer 版本。0.1.5-rc.3 的 preset / 压缩 API 不同，不能混用。
@@ -298,7 +322,7 @@ TESTBOX
 ```
 
 - DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
-- 当前版本：0.2.0-rc.2.plugin.1.23。
+- 当前版本：0.2.0-rc.2.plugin.1.24。
 - 插件本体为 1.0；功能迭代递增为 1.1、2.0。
 
 - DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。

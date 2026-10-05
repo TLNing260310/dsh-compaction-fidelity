@@ -353,7 +353,15 @@ export function apply(ctx, config = {}) {
       const scope = typeof args.scope === "string" && args.scope.trim().length > 0 ? args.scope.trim() : ".";
       try {
         const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
-        if (action === "check") return { text: existsSync(target.absolute) ? "exists: " + target.relative : "missing: " + target.relative };
+        if (action === "check") {
+          if (!existsSync(target.absolute)) return { text: "missing: " + target.relative };
+          const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
+          const stat = statSync(target.absolute);
+          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+          const verification = verifyArchitectureDoc(doc === null ? "" : doc.text);
+          const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
+          return { text: "exists: " + target.relative + "; aligned=" + aligned + "; score=" + change.score + "; method=" + change.method + "; attestation=" + (verification.attestation === null ? "missing" : verification.attestation.revision) + "; consistent=" + verification.ok };
+        }
         const patterns = String(args.pattern ?? "").split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
         if (action === "manage") {
           const rules = architectureScopeRules(cwd, scope);
@@ -520,13 +528,21 @@ export function apply(ctx, config = {}) {
           try {
             const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
             if (action === 'check') {
-            const patterns = rest.slice(2).join(" ").split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
+              if (!existsSync(target.absolute)) return { kind: 'success', text: '不存在：' + target.relative };
+              const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
+              const stat = statSync(target.absolute);
+              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+              const verification = verifyArchitectureDoc(doc === null ? '' : doc.text);
+              const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
+              return { kind: 'success', text: '已存在：' + target.relative + '；对齐=' + (aligned ? 'aligned' : 'stale') + '；变化分=' + change.score + '；检测=' + change.method + '；attestation=' + (verification.attestation === null ? 'missing' : verification.attestation.revision) + '；consistent=' + verification.ok };
+            }
+            const patterns = rest.slice(2).join(' ').split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
             if (action === 'manage') {
               const rules = architectureScopeRules(cwd, scope);
-              return { kind: 'success', text: rules === null ? `scope 未受管：${scope}` : `scope=${scope}；include=${JSON.stringify(rules.include ?? [])}；exclude=${JSON.stringify(rules.exclude ?? [])}` };
+              return { kind: 'success', text: rules === null ? 'scope 未受管：' + scope : 'scope=' + scope + '；include=' + JSON.stringify(rules.include ?? []) + '；exclude=' + JSON.stringify(rules.exclude ?? []) };
             }
             if (action === 'include' || action === 'exclude' || action === 'unmanage') {
-              if (action !== 'unmanage' && patterns.length === 0) return { kind: 'error', text: `用法：/compaction-fidelity architecture ${action} <scope> <pattern>` };
+              if (action !== 'unmanage' && patterns.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity architecture ' + action + ' <scope> <pattern>' };
               let rules = null;
               if (action === 'unmanage' && patterns.length === 0) {
                 removeArchitectureScope(cwd, cfg.indexDir, scope);
@@ -536,9 +552,7 @@ export function apply(ctx, config = {}) {
                 if (existsSync(target.absolute)) refreshArchitectureDocument(cwd, scope);
                 rememberArchitectureScope(invocation.agent, scope);
               }
-              return { kind: 'success', text: `${action}：scope=${scope}；include=${JSON.stringify(rules?.include ?? [])}；exclude=${JSON.stringify(rules?.exclude ?? [])}` };
-            }
-              return { kind: 'success', text: existsSync(target.absolute) ? `已存在：${target.relative}` : `不存在：${target.relative}` };
+              return { kind: 'success', text: action + '：scope=' + scope + '；include=' + JSON.stringify(rules?.include ?? []) + '；exclude=' + JSON.stringify(rules?.exclude ?? []) };
             }
             if (action === 'read') {
               const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);

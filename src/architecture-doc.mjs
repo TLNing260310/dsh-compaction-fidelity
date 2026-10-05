@@ -195,7 +195,10 @@ export function appendArchitectureUpdate(text, update = {}) {
 }
 
 export function preserveArchitectureUpdateLog(oldText, newText) {
-  return finalizeArchitectureDoc(preserveArchitectureUpdateLogRaw(oldText, newText));
+  const merged = preserveArchitectureUpdateLogRaw(oldText, newText);
+  const previousRevision = Math.max(readArchitectureAttestation(oldText)?.revision ?? 0, readArchitectureAttestation(merged)?.revision ?? 0);
+  const attestation = buildArchitectureAttestation(merged);
+  return upsertArchitectureAttestation(merged, { ...attestation, revision: previousRevision + 1 });
 }
 
 const ATTESTATION_RE = /<architecture_attestation>([\s\S]*?)<\/architecture_attestation>\s*/g;
@@ -204,12 +207,22 @@ function stripAttestation(text) {
   return String(text ?? "").replace(ATTESTATION_RE, "");
 }
 
+function normalizeHashSection(text) {
+  return String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function structureSection(text) {
   const value = String(text ?? "");
   const markerIndex = value.indexOf("<!-- architecture-update-log -->");
   const closingIndex = value.indexOf("</architecture_retrieval>");
   const end = markerIndex >= 0 ? markerIndex : closingIndex >= 0 ? closingIndex : value.length;
-  return stripAttestation(value.slice(0, end));
+  return normalizeHashSection(stripAttestation(value.slice(0, end)));
 }
 
 function updateLogSection(text) {
@@ -217,7 +230,7 @@ function updateLogSection(text) {
   const markerIndex = value.indexOf("<!-- architecture-update-log -->");
   const closingIndex = value.indexOf("</architecture_retrieval>");
   if (markerIndex < 0 || closingIndex < 0) return "";
-  return stripAttestation(value.slice(markerIndex, closingIndex));
+  return normalizeHashSection(stripAttestation(value.slice(markerIndex, closingIndex)));
 }
 
 export function readArchitectureAttestation(text) {
@@ -249,12 +262,15 @@ function renderAttestationBlock(attestation) {
 }
 
 export function upsertArchitectureAttestation(text, attestation = undefined) {
-  const value = String(text ?? "").replace(ATTESTATION_RE, "").replace(/\n{3,}/g, "\n\n");
-  const block = renderAttestationBlock(attestation ?? buildArchitectureAttestation(value));
+  const source = String(text ?? "");
+  const resolved = attestation ?? buildArchitectureAttestation(source);
+  const value = source.replace(ATTESTATION_RE, "").replace(/\n{3,}/g, "\n\n");
+  const block = renderAttestationBlock(resolved);
   const frontmatter = value.match(/^---\n[\s\S]*?\n---\n/);
   if (frontmatter !== null) return value.slice(0, frontmatter[0].length) + "\n" + block + "\n" + value.slice(frontmatter[0].length);
   return block + "\n\n" + value;
 }
+
 
 export function finalizeArchitectureDoc(text) {
   return upsertArchitectureAttestation(text);
@@ -337,16 +353,18 @@ export function countChangedFilesSince(root, scope, sinceMs, options = {}) {
   return changed;
 }
 export function validateArchitectureDoc(text) {
+  const value = String(text ?? "").replace(/\r\n?/g, "\n");
   const errors = [];
-  if (!/^---\n[\s\S]*?\n---/m.test(text)) errors.push("missing frontmatter");
-  if (!text.includes("<architecture_retrieval")) errors.push("missing <architecture_retrieval>");
-  if (!text.includes("</architecture_retrieval>")) errors.push("missing </architecture_retrieval>");
+  if (!/^---\n[\s\S]*?\n---/m.test(value)) errors.push("missing frontmatter");
+  if (!value.includes("<architecture_retrieval")) errors.push("missing <architecture_retrieval>");
+  if (!value.includes("</architecture_retrieval>")) errors.push("missing </architecture_retrieval>");
   const jsonBlocks = [];
-  for (const match of text.matchAll(/```json\n([\s\S]*?)\n```/g)) {
+  for (const match of value.matchAll(/```json\n([\s\S]*?)\n```/g)) {
     try { jsonBlocks.push(JSON.parse(match[1])); } catch (error) { errors.push("invalid json block: " + (error instanceof Error ? error.message : String(error))); }
   }
   return { ok: errors.length === 0, errors, jsonBlocks };
 }
+
 
 
 

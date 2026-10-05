@@ -31,11 +31,33 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - One master switch: installing the bundle enables everything; removing it restores the built-in DSH presets; `/compaction-fidelity on|off` switches the whole plugin at runtime.
 - Managed scope rules: `architecture include <scope> <glob>` and `architecture exclude <scope> <glob>` store include/exclude filters in `.dsh/compaction-fidelity/architecture-scopes.json`; filtered scopes drive generated docs, baselines, change detection, and anchor injection.
 - Architecture attestation: every ARCHITECTURE.md carries revision + structureHash + updateLogHash + entryCount; `architecture status` and `architecture verify` report mismatches.
-- A/B fingerprint calibration: raw-summary metrics and post-compensation metrics are compared per language group in `.dsh/compaction-fidelity/fidelity-calibration.json`; each sample records `dominantLanguage`, `mixedRatio`, `cjkRatio`, and `latinRatio`. Mixed sessions use a `mixed:<dominant>` group. Calibrated levels appear after 8 samples for a group; the gate still uses the raw deterministic level.
+- Attestation hashing normalizes CRLF, trailing whitespace, and repeated blank lines, so formatting-only refresh does not create false inconsistency.
+- Re-include semantics: changes made while a scope pattern is excluded are not tracked; re-include starts from a fresh baseline of the current state.
+- Explicit alignment check: `architecture check <scope>` reports aligned/stale, semantic score, detection method, attestation revision, and consistency.
 - Anchor quality: anchors are deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
 - Persistent reminder backoff: architecture refresh reminders back off 0 -> 5 minutes -> 30 minutes, then become status-only; state lives in `.dsh/compaction-fidelity/architecture-reminders.json`.
-- Cross-lingual fidelity fingerprint: freezes exact values, CJK bigrams, and structure before compaction, compares the generated summary, emits L0–L3 levels, appends a `fidelity_compensation` block for missing exact values, and writes metrics to `.dsh/compaction-fidelity/fingerprints/`.
+- Cross-lingual fidelity fingerprint: freezes exact values, CJK bigrams, and structure before compaction, compares the generated summary, emits L0-L3 levels, appends a `fidelity_compensation` block for missing exact values, and writes metrics to `.dsh/compaction-fidelity/fingerprints/`.
 - Language policy: default `auto` follows the session language (no double translation); `en` writes model prose in English but preserves verbatim user input and exact values.
+- A/B fingerprint calibration: raw-summary metrics and post-compensation metrics are compared per language group in `.dsh/compaction-fidelity/fidelity-calibration.json`; each sample records `dominantLanguage`, `mixedRatio`, `cjkRatio`, and `latinRatio`. Mixed sessions use a `mixed:<dominant>` group. Calibrated levels appear after 8 samples for a group; the gate still uses the raw deterministic level.
+
+### Calibration dashboard
+
+`fidelity-calibration.json` is the evidence asset. A minimal static view:
+
+```json
+{
+  "samples": [
+    { "calibrationKey": "zh", "dominantLanguage": "zh", "mixedRatio": 0.05, "exactOverall": 0.84, "cjkRecall": 0.79, "structure": 0.92 },
+    { "calibrationKey": "mixed:en", "dominantLanguage": "en", "mixedRatio": 0.42, "exactOverall": 0.71, "cjkRecall": 0.88, "structure": 0.90 }
+  ]
+}
+```
+
+The gate does not consume this until a group reaches 8 samples; before that it stays on the deterministic L0-L3 level. Cold start can be shortened by merging samples from trusted sessions into this array manually.
+
+### Relationship to compression backends
+
+This plugin observes fidelity; it does not replace `summarize()`. Deterministic or high-fidelity compression plugins choose what to keep; this layer records how much exact-value, CJK, and structure fidelity survived. Profile-level coexistence is plausible but not yet validated.
 
 ## Why it matters
 
@@ -144,7 +166,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.23`
+- Current: `0.2.0-rc.2.plugin.1.24`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`

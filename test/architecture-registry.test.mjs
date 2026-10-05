@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeArchitectureBaseline } from "../src/architecture-changes.mjs";
+import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
 import {
   globToRegExp,
   createWorkspaceFileFilter,
@@ -89,4 +89,36 @@ test("buildIndex honors a managed filterFile callback", () => {
   const index = buildIndex(root, { indexDir, write: false, filterFile: (rel) => rel === "managed/src/a.ts" });
   assert.equal(index.files.length, 1);
   assert.equal(index.files[0].p, "managed/src/a.ts");
+});
+
+test("excluded changes are not tracked and re-include rebaselines the current state", () => {
+  write("cycle/src/a.ts", "export const v = 1;\n");
+  updateArchitectureScopeRules(root, indexDir, "cycle", { include: ["src/**"] });
+  let registry = readArchitectureRegistry(root, indexDir);
+  let filter = createWorkspaceFileFilter(registry, "cycle");
+  writeArchitectureBaseline(root, "cycle", computeArchitectureBaseline(root, "cycle", { indexDir, filterFile: filter }), indexDir);
+  let baseline = computeArchitectureBaseline(root, "cycle", { indexDir, filterFile: filter });
+  assert.ok(baseline.files["cycle/src/a.ts"] !== undefined);
+
+  updateArchitectureScopeRules(root, indexDir, "cycle", { exclude: ["src/**"] });
+  registry = readArchitectureRegistry(root, indexDir);
+  filter = createWorkspaceFileFilter(registry, "cycle");
+  baseline = computeArchitectureBaseline(root, "cycle", { indexDir, filterFile: filter });
+  assert.equal(baseline.files["cycle/src/a.ts"], undefined);
+  writeArchitectureBaseline(root, "cycle", baseline, indexDir);
+
+  write("cycle/src/a.ts", "export const v = 2;\n");
+  const excludedChange = detectSemanticChanges(root, "cycle", { indexDir, filterFile: filter });
+  assert.equal(excludedChange.score, 0);
+  assert.equal(excludedChange.forced, false);
+
+  updateArchitectureScopeRules(root, indexDir, "cycle", { removeExclude: ["src/**"] });
+  registry = readArchitectureRegistry(root, indexDir);
+  filter = createWorkspaceFileFilter(registry, "cycle");
+  baseline = computeArchitectureBaseline(root, "cycle", { indexDir, filterFile: filter });
+  assert.ok(baseline.files["cycle/src/a.ts"] !== undefined);
+  writeArchitectureBaseline(root, "cycle", baseline, indexDir);
+  const reincludeChange = detectSemanticChanges(root, "cycle", { indexDir, filterFile: filter });
+  assert.equal(reincludeChange.score, 0);
+  assert.equal(reincludeChange.forced, false);
 });

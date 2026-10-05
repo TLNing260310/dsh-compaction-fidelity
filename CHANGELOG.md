@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.24
+
+Boundary hardening, calibration cold-start guidance, and explicit alignment checks.
+
+- Normalized structureHash / updateLogHash across CRLF, trailing whitespace, and repeated blank lines.
+- Fixed attestation revision monotonicity; preserveArchitectureUpdateLog now increments from the maximum of old and fresh revisions.
+- architecture check now reports aligned/stale, semantic score, detection method, attestation revision, and consistency.
+- Covered exclude -> modify -> re-include semantics: excluded changes are not tracked; re-include rebaselines the current state.
+- Added tests for legacy attestation upgrade, revision monotonicity, and whitespace-only formatting stability.
+- README documents manual calibration sample import and the observation-layer relationship to compression backends.
+- Still not implemented: observe, phase_transition inference, MCP server, and token-level Whole-Index budgets.
+
 ## 0.2.0-rc.2.plugin.1.23
 
 Managed scope include/exclude, architecture attestation, and structure/update-log consistency.

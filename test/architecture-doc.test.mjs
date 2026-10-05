@@ -80,3 +80,36 @@ test("refresh helper preserves the update log", () => {
   assert.ok(merged.includes("kept update"));
   assert.ok(merged.includes("src/feature/new.ts"));
 });
+
+test("attestation hashes are stable across whitespace-only formatting differences", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const reformatted = original.replace(/\n/g, "\r\n").replace(/[ \t]+$/gm, "");
+  const verification = verifyArchitectureDoc(reformatted);
+  assert.equal(verification.ok, true, JSON.stringify(verification.errors));
+});
+
+test("attestation revision is monotonic across append and refresh", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const firstRevision = readArchitectureAttestation(original).revision;
+  const updated = appendArchitectureUpdate(original, { scope: "src/feature", summary: "revision check" });
+  const secondRevision = readArchitectureAttestation(updated).revision;
+  const fresh = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [{ p: "src/feature/new.ts", kind: "module", imports: [] }], files: [], commands: [], dbFiles: [] } });
+  const merged = preserveArchitectureUpdateLog(updated, fresh);
+  const thirdRevision = readArchitectureAttestation(merged).revision;
+  assert.ok(secondRevision > firstRevision);
+  assert.ok(thirdRevision > secondRevision);
+  assert.equal(verifyArchitectureDoc(merged).ok, true);
+});
+
+test("legacy document without attestation gets one on first update", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const legacy = original.replace(/<architecture_attestation>[\s\S]*?<\/architecture_attestation>\s*/, "");
+  assert.equal(readArchitectureAttestation(legacy), null);
+  const upgraded = appendArchitectureUpdate(legacy, { scope: "src/feature", summary: "legacy upgrade" });
+  const attestation = readArchitectureAttestation(upgraded);
+  assert.ok(attestation !== null);
+  assert.equal(attestation.revision, 1);
+  assert.equal(attestation.entryCount, 1);
+  const verification = verifyArchitectureDoc(upgraded);
+  assert.equal(verification.ok, true, JSON.stringify(verification.errors));
+});
