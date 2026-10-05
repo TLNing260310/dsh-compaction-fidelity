@@ -597,7 +597,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         preFingerprint,
       });
       const store = recordFidelitySample(cwd, runtime.indexDir, sample);
-      const level = calibrateFidelityLevel(finalFidelity, store.samples, preFingerprint.language);
+      const level = calibrateFidelityLevel(finalFidelity, store.samples, sample.calibrationKey ?? preFingerprint.language);
       calibration = { sample, level: level.level, calibrated: level.calibrated, score: level.score, sampleCount: level.sampleCount, thresholds: level.thresholds, finalFidelity };
     } catch (error) {
       this.ctx.logger?.warn?.("compaction-fidelity calibration failed: " + (error instanceof Error ? error.message : String(error)));
@@ -616,6 +616,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
 }
 
 export default CompactionFidelityEngine;
+
 
 
 

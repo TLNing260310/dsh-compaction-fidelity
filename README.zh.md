@@ -28,7 +28,7 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - **总开关/总闸**：安装 bundle 即整体启用；卸载即恢复内置 preset；运行时 `/compaction-fidelity on|off` 在插件压缩与官方压缩之间整体切换。
 - **跨语言保真指纹**：压缩前冻结精确值、CJK 二元语义单元与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
 - **语言策略**：默认 `auto` 跟随会话语言，避免翻译两次；`en` 模式英文写摘要，但用户原话与精确值原样保留、不翻译。
-- **A/B 指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每种语言累计 8 个样本后给出校准分级，门控仍使用原始确定性分级。
+- **A/B 指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言组分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每条样本包含 `dominantLanguage`、`mixedRatio`、`cjkRatio`、`latinRatio`。中英混合会话进入 `mixed:<主语言>` 组。每个语言组累计 8 个样本后给出校准分级，门控仍使用原始确定性分级。
 - **锚点质量**：锚点按 canonical identity 去重，按关系强度评分，并按类别限流（测试 2、文档 1、数据库 2）。
 - **提醒退避持久化**：架构刷新提醒按 0 -> 5 分钟 -> 30 分钟退避，之后只保留 status 可见；状态存于 `.dsh/compaction-fidelity/architecture-reminders.json`。
 
@@ -54,6 +54,10 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - 本地可审计：文本索引与指纹可随 Git 版本化，热路径无神经嵌入。
 - 差异化：生态已有阈值/checkpoint 插件；本项目聚焦中英混合压缩损失量化与补偿。
 
+## 为什么需要量化校准
+
+逐字保留或选择性压缩只决定留下了什么，却不会告诉你生成摘要丢了多少精确值或 CJK 二元组。本插件在每次压缩后记录原始摘要与最终摘要（含补偿块）的分语言保留指标，写入 .dsh/compaction-fidelity/ 并随 Git 版本化；每个语言组累计 8 个样本后，才用这些历史给出一份校准分级作为证据。门控在样本不足时仍使用原始确定性分级。
+
 ## 设计理念展开
 
 - 摘要是有损索引，不是完整 transcript。
@@ -66,6 +70,8 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 ## 已知边界与验证方向
 
 - A/B 指纹校准现已记录原始摘要与最终摘要的分语言指标，但下游 QA 相关性仍未测量。
+- 校准按语言组各需 8 个样本；中英混合会话进入 `mixed:<主语言>` 组，避免污染纯 zh/en 统计。
+- 锚点 quality 权重仍为固定值；项目级权重覆盖列为 P1 候选。
 - 补偿块/锚点可能稀释注意力；已实现 2048 token 软上限、类别优先级与锚点质量限流，最优阈值仍需更多校准样本。
 - zh/en/bilingual 摘要策略缺对照；约束 ledger 尚未覆盖。
 - 不建议默认降低 256K 输出预留；provider 约束仍成立。
@@ -292,7 +298,7 @@ TESTBOX
 ```
 
 - DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
-- 当前版本：0.2.0-rc.2.plugin.1.21。
+- 当前版本：0.2.0-rc.2.plugin.1.22。
 - 插件本体为 1.0；功能迭代递增为 1.1、2.0。
 
 - DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。
@@ -497,5 +503,4 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 - 也可执行 /compaction-fidelity architecture create 命令直接创建；
 - 生成内容按目标文件夹过滤模块、文件与数据库锚点；
 - update 动作仍然只追加，不覆写原介绍。
-
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.22
+
+Audit corrections for calibration sampling and reminder identity.
+
+- Calibration samples now record dominantLanguage, mixedRatio, cjkRatio, and latinRatio.
+- Mixed zh/en sessions calibrate under a mixed:<dominant> group instead of silently entering pure zh/en statistics.
+- Calibration groups are isolated: 8 samples in one group do not activate calibrated levels for another group.
+- Architecture reminder keys now use workspacePath|scope|mtime instead of sessionId|scope|mtime, so reminder backoff survives DSH restarts and session switches.
+- README documents the cold-start requirement and why quantitative calibration is distinct from verbatim-only compaction.
+- Anchor quality weights remain fixed; a project-level override remains a P1 candidate.
+
 ## 0.2.0-rc.2.plugin.1.21
 
 P1 fidelity calibration, anchor quality, and reminder backoff.

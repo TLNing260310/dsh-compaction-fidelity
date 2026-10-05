@@ -33,7 +33,7 @@ import { architectureDocExists, appendArchitectureUpdate, detectTaskFolders, las
 import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './architecture-io.mjs';
 import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
-import { pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from './reminder-state.mjs';
+import { architectureReminderKey, pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from './reminder-state.mjs';
 export const inject = ['commands', 'tools'];
 
 const TOOL_ID = 'dsh-compaction-fidelity#command';
@@ -733,7 +733,7 @@ export function apply(ctx, config = {}) {
               const change = detectSemanticChanges(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000 });
               if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
               const now = Date.now();
-              const reminderKey = askedSession + "|" + scope + "|" + docStat.mtimeMs;
+              const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);
               const reminderStore = readReminderState(askedCwd, cfg.indexDir);
               const reminder = reminderDecision(reminderStore.entries[reminderKey], now);
               if (reminder.action !== "inject") continue;
@@ -793,6 +793,7 @@ export function apply(ctx, config = {}) {
 }
 
 export default { name, inject, apply };
+
 
 
 

@@ -43,7 +43,7 @@ function quantile(sorted, q) {
 export function calibrateFidelityLevel(comparison, samples, language) {
   const score = compositeFidelityScore(comparison);
   const scoped = (Array.isArray(samples) ? samples : [])
-    .filter((sample) => sample.language === language)
+    .filter((sample) => sample.language === language || sample.calibrationKey === language)
     .map((sample) => sample.finalScore)
     .filter(Number.isFinite)
     .sort((left, right) => left - right);
@@ -65,9 +65,18 @@ export function calibrateFidelityLevel(comparison, samples, language) {
 export function buildFidelitySample({ language, rawComparison, finalComparison, compensation, constraintComparison, anchorQuality, preFingerprint }) {
   const rawScore = compositeFidelityScore(rawComparison);
   const finalScore = compositeFidelityScore(finalComparison);
+  const mix = preFingerprint?.languageMix ?? null;
+  const dominantLanguage = mix?.dominantLanguage ?? preFingerprint?.language ?? language ?? "unknown";
+  const mixedRatio = Number.isFinite(mix?.mixedRatio) ? mix.mixedRatio : 0;
+  const calibrationKey = mixedRatio >= 0.3 ? `mixed:${dominantLanguage}` : dominantLanguage;
   return {
     at: new Date().toISOString(),
-    language: language ?? preFingerprint?.language ?? "unknown",
+    language: dominantLanguage,
+    dominantLanguage,
+    mixedRatio,
+    cjkRatio: Number.isFinite(mix?.cjkRatio) ? mix.cjkRatio : null,
+    latinRatio: Number.isFinite(mix?.latinRatio) ? mix.latinRatio : null,
+    calibrationKey,
     rawScore,
     finalScore,
     delta: Number((finalScore - rawScore).toFixed(4)),
@@ -89,6 +98,7 @@ export function buildFidelitySample({ language, rawComparison, finalComparison, 
     pre: preFingerprint
       ? {
           language: preFingerprint.language ?? null,
+          languageMix: preFingerprint.languageMix ?? null,
           cjkBigrams: preFingerprint.cjkBigrams?.length ?? 0,
           exactPaths: preFingerprint.exact?.paths?.length ?? 0,
           chars: preFingerprint.stats?.chars ?? 0,
@@ -104,3 +114,4 @@ export function recordFidelitySample(cwd, indexDir, sample) {
   writeFidelityCalibration(cwd, indexDir, store);
   return store;
 }
+

@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from "../src/reminder-state.mjs";
+import { architectureReminderKey, pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from "../src/reminder-state.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-reminder-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 const MINUTE = 60 * 1000;
+
+test("reminder key is workspace-stable and session independent", () => {
+  assert.equal(architectureReminderKey("D:\\AI\\work", "scope", 123), architectureReminderKey("D:/AI/work", "scope", 123));
+  assert.notEqual(architectureReminderKey("D:/AI/work", "scope", 123), architectureReminderKey("D:/AI/work", "scope", 124));
+  assert.equal(architectureReminderKey("D:/AI/work", "scope", 123).includes("session"), false);
+});
 
 test("reminder decisions back off from immediate to five and thirty minutes", () => {
   const now = 1_000_000_000;
@@ -40,3 +46,4 @@ test("reminder state persists under the workspace index", () => {
   const loaded = readReminderState(root, ".dsh/compaction-fidelity");
   assert.equal(loaded.entries["session|scope|1"].count, 1);
 });
+

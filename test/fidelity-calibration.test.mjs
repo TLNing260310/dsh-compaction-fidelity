@@ -52,6 +52,31 @@ test("A/B sample records whether compensation improved the final fingerprint", (
   assert.equal(sample.constraints.preserved, 1);
 });
 
+test("calibration keeps language groups isolated", () => {
+  const samples = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map((finalScore) => ({ language: "zh", finalScore }));
+  const result = calibrateFidelityLevel(comparison("L2", 0.5, 0.5), samples, "en");
+  assert.equal(result.calibrated, false);
+  assert.equal(result.level, "L2");
+  assert.equal(result.sampleCount, 0);
+});
+
+test("mixed-language samples get a dedicated calibration key", () => {
+  const sample = buildFidelitySample({
+    rawComparison: comparison("L2", 0.6, 0.5),
+    finalComparison: comparison("L1", 0.8, 0.7),
+    preFingerprint: {
+      language: "zh",
+      languageMix: { dominantLanguage: "zh", mixedRatio: 0.4, cjkRatio: 0.6, latinRatio: 0.4 },
+      cjkBigrams: [],
+      exact: { paths: [] },
+      stats: { chars: 10 },
+    },
+  });
+  assert.equal(sample.dominantLanguage, "zh");
+  assert.equal(sample.mixedRatio, 0.4);
+  assert.equal(sample.calibrationKey, "mixed:zh");
+});
+
 test("recordFidelitySample persists calibration data under the workspace index", () => {
   const sample = buildFidelitySample({
     language: "en",
@@ -63,3 +88,4 @@ test("recordFidelitySample persists calibration data under the workspace index",
   assert.equal(store.samples.length, 1);
   assert.ok(existsSync(join(root, ".dsh", "compaction-fidelity", "fidelity-calibration.json")));
 });
+

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCompensation, buildCompensationText, buildFingerprint, compareFingerprints } from '../src/fingerprint.mjs';
+import { analyzeLanguageMix, buildCompensation, buildCompensationText, buildFingerprint, compareFingerprints } from '../src/fingerprint.mjs';
 
 const message = (text) => [{ role: 'user', content: [{ type: 'text', text }] }];
 
@@ -12,6 +12,17 @@ test('buildFingerprint extracts exact values, CJK bigrams, and structure', () =>
   assert.ok(fingerprint.cjkBigrams.includes('中文'));
   assert.ok(fingerprint.headings.length >= 1);
   assert.ok(fingerprint.stats.cjkChars >= 10);
+});
+
+test('language mix reports dominant language and mixed ratio', () => {
+  const zh = analyzeLanguageMix('保留中文语义，端口 8080。');
+  assert.equal(zh.dominantLanguage, 'zh');
+  assert.equal(zh.mixedRatio, 0);
+  const en = analyzeLanguageMix('Keep the English summary and port 8080.');
+  assert.equal(en.dominantLanguage, 'en');
+  const mixed = analyzeLanguageMix('保留中文语义 keep english summary 端口 8080');
+  assert.equal(mixed.dominantLanguage, 'mixed');
+  assert.ok(mixed.mixedRatio > 0.3);
 });
 
 test('identical fingerprints stay at L0', () => {
@@ -89,5 +100,6 @@ test("compensation keeps higher-priority categories under a tiny budget", () => 
   assert.ok(result.tokens <= 128);
   assert.ok(result.entriesByCategory.paths >= 1);
 });
+
 
 

@@ -63,16 +63,29 @@ function exactCategories(ledger) {
   };
 }
 
+export function analyzeLanguageMix(text) {
+  const value = typeof text === "string" ? text : "";
+  const cjkChars = (value.match(CJK_CHAR_RE) ?? []).length;
+  const latinChars = (value.match(/[A-Za-z]/g) ?? []).length;
+  const total = cjkChars + latinChars;
+  const cjkRatio = total === 0 ? 0 : Number((cjkChars / total).toFixed(4));
+  const latinRatio = total === 0 ? 0 : Number((latinChars / total).toFixed(4));
+  const mixedRatio = total === 0 ? 0 : Number(Math.min(cjkRatio, latinRatio).toFixed(4));
+  const dominantLanguage = total === 0 ? "unknown" : cjkRatio >= 0.7 ? "zh" : latinRatio >= 0.7 ? "en" : "mixed";
+  return { cjkChars, latinChars, cjkRatio, latinRatio, mixedRatio, dominantLanguage };
+}
 export function buildFingerprint(messages, options = {}) {
   const text = messagesText(messages);
   const ledger = options.ledger ?? extractLedger(messages);
   const exact = exactCategories(ledger);
   exact.numbers = uniqueBy([...(exact.numbers ?? []), ...(text.match(BARE_NUMBER_RE) ?? [])], (value) => value).slice(0, 80);
+  const languageMix = analyzeLanguageMix(text);
   const cjkChars = (text.match(CJK_CHAR_RE) ?? []).length;
   const approxTokens = Math.ceil(cjkChars * 0.8 + Math.max(0, text.length - cjkChars) / 4);
   return {
     generatedAt: new Date().toISOString(),
     language: ledger.language,
+    languageMix,
     exact,
     cjkBigrams: cjkBigrams(text),
     headings: headings(text),
@@ -262,4 +275,6 @@ export function buildCompensation(comparison, options = {}) {
   const truncated = Object.values(omittedByCategory).some((value) => value > 0);
   return { text, tokens: estimateCompensationTokens(text), maxTokens, truncated, entriesByCategory, omittedByCategory };
 }
+
+
 

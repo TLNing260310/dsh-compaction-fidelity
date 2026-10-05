@@ -13,6 +13,13 @@ function filePath(cwd, indexDir) {
   return join(cwd, indexDir, REMINDER_FILE);
 }
 
+export function architectureReminderKey(cwd, scope, mtimeMs) {
+  const workspace = String(cwd ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedScope = String(scope ?? ".").replace(/\\/g, "/").replace(/^\.\//, "") || ".";
+  const stamp = Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : 0;
+  return `${workspace}|${normalizedScope}|${stamp}`;
+}
+
 export function readReminderState(cwd, indexDir) {
   try {
     const parsed = JSON.parse(readFileSync(filePath(cwd, indexDir), "utf8"));
@@ -59,3 +66,4 @@ export function pruneReminderState(state, now = Date.now(), options = {}) {
   state.entries = entries;
   return state;
 }
+

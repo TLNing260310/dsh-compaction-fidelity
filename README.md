@@ -29,7 +29,7 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Lossless retrieval: anchors are pointers; `compaction-fidelity-brief` and `compaction-fidelity-lookup` retrieve exact project structure after compaction.
 - AOCI-inspired architecture refresh gate: `status` / `refresh` commands, persistent scope registry, context-compaction priority collection, Git + content-hash change detection, weighted semantic score, and append-only updates whose latest entry is last; architecture writes use a cross-process lock + CAS + atomic rename.
 - One master switch: installing the bundle enables everything; removing it restores the built-in DSH presets; `/compaction-fidelity on|off` switches the whole plugin at runtime.
-- A/B fingerprint calibration: raw-summary metrics and post-compensation metrics are compared per language in `.dsh/compaction-fidelity/fidelity-calibration.json`; calibrated levels activate after 8 samples per language while the gate keeps using the raw deterministic level.
+- A/B fingerprint calibration: raw-summary metrics and post-compensation metrics are compared per language group in `.dsh/compaction-fidelity/fidelity-calibration.json`; each sample records `dominantLanguage`, `mixedRatio`, `cjkRatio`, and `latinRatio`. Mixed sessions use a `mixed:<dominant>` group. Calibrated levels appear after 8 samples for a group; the gate still uses the raw deterministic level.
 - Anchor quality: anchors are deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
 - Persistent reminder backoff: architecture refresh reminders back off 0 -> 5 minutes -> 30 minutes, then become status-only; state lives in `.dsh/compaction-fidelity/architecture-reminders.json`.
 - Cross-lingual fidelity fingerprint: freezes exact values, CJK bigrams, and structure before compaction, compares the generated summary, emits L0–L3 levels, appends a `fidelity_compensation` block for missing exact values, and writes metrics to `.dsh/compaction-fidelity/fingerprints/`.
@@ -45,6 +45,10 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Local and auditable: .dsh/compaction-fidelity text index, no neural embeddings.
 - Differentiation: ecosystem has threshold/checkpoint plugins; this focuses on bilingual loss.
 
+## Why quantitative calibration
+
+Selection- or verbatim-based compaction keeps the text it chooses; it does not tell you how many exact values or CJK bigrams the generated summary failed to retain. This project records per-language retention metrics for each compaction (raw summary vs final summary after compensation), commits that record under `.dsh/compaction-fidelity/`, and only after 8 samples per language group uses it to report a calibrated level. The gate remains deterministic while the data accumulates.
+
 ## Core ideas
 
 - Summaries are lossy indexes, not transcripts.
@@ -56,7 +60,10 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 
 ## Known boundaries
 
-- A/B fingerprint calibration now records raw-summary vs post-compensation metrics per language, but downstream QA correlation is not measured yet.
+- A/B fingerprint calibration now records raw-summary vs post-compensation metrics per language group, but downstream QA correlation is not measured yet.
+- Compensation/anchors may dilute attention; a 2048-token soft cap, category priority, and anchor quality caps are implemented, but the optimum thresholds still need more calibration samples.
+- Calibration requires 8 samples per language group; mixed zh/en sessions use a `mixed:<dominant>` group so they do not silently pollute pure zh/en statistics.
+- Anchor quality weights are still fixed; a project-level weight override is a P1 candidate.
 - Compensation/anchors may dilute attention; a 2048-token soft cap, category priority, and anchor quality caps are implemented, but the optimum thresholds still need more calibration samples.
 - zh/en/bilingual strategy lacks controlled comparison; constraint ledger not covered.
 - Do not lower the 256K output reserve by default; provider constraint still holds.
@@ -135,7 +142,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.21`
+- Current: `0.2.0-rc.2.plugin.1.22`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`
