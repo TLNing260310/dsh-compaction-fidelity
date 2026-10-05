@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.17
+
+Session format v4 compatibility for injected messages.
+
+- Injected messages (the ARCHITECTURE.md prompt and the retrieval-anchor injection) now carry the producer-owned source kind `plugin:compaction-fidelity` instead of the retired v3 wrapper (kind `'plugin'` plus a `plugin` field). DSH v4 refuses that wrapper at admission with "format v4 message requires a producer-owned source kind", which failed the step that tried to inject.
+- `plugin:compaction-fidelity` is exactly what DSH's own v3 -> v4 migration derives for this plugin, so messages written after the upgrade keep the same attribution as migrated history instead of being split into two producers.
+- Added `src/message-source.mjs` as the single definition of that source, with `isProducerOwnedSource()` mirroring the v4 admission rule, and `test/message-source.test.mjs` covering the rule, the frozen constant, and a scan that fails if any `src/*.mjs` site builds a plugin source by hand again.
+
 ## 0.2.0-rc.2.plugin.1.16
 
 Release preparation and audit.

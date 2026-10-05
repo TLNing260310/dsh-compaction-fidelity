@@ -27,9 +27,10 @@ import {
   DEFAULT_INDEX_DIR,
 } from './state.mjs';
 import { clampText, isSafeRelativePath, normalizeRelPath, toPosix } from './util.mjs';
+import { PLUGIN_NAME, PRODUCER_SOURCE } from './message-source.mjs';
 import { architectureDocExists, appendArchitectureUpdate, detectTaskFolders, lastUserText, readArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc } from './architecture-doc.mjs';
 
-export const name = 'compaction-fidelity';
+export const name = PLUGIN_NAME;
 export const inject = ['commands', 'tools'];
 
 const TOOL_ID = 'dsh-compaction-fidelity#command';
@@ -519,7 +520,7 @@ export function apply(ctx, config = {}) {
                   const oldest = architectureAsked.values().next().value;
                   if (oldest !== undefined) architectureAsked.delete(oldest);
                 }
-                const message = createUserMessage({ content: [{ type: "text", text }], source: { kind: "plugin", plugin: "compaction-fidelity" } });
+                const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
                 return { ...decision, messages: [...(decision?.messages ?? []), message] };
               }
             }
@@ -556,7 +557,7 @@ export function apply(ctx, config = {}) {
         ]), 4000);
         const message = createUserMessage({
           content: [{ type: 'text', text }],
-          source: { kind: 'plugin', plugin: 'compaction-fidelity' },
+          source: PRODUCER_SOURCE,
         });
         return { ...decision, messages: [...decision.messages, message] };
       } catch (error) {

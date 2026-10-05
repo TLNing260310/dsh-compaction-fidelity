@@ -1,6 +1,6 @@
 {
   "name": "dsh-compaction-fidelity",
-  "version": "0.2.0-rc.2.plugin.1.16",
+  "version": "0.2.0-rc.2.plugin.1.17",
   "description": "dsh-compaction-fidelity: cross-lingual fidelity fingerprints + project cognition anchors + dynamic compaction line for DSH.",
   "license": "MIT",
   "type": "module",
