@@ -124,8 +124,22 @@ export function apply(ctx, config = {}) {
     locale: getGlobalState()?.summaryLanguage ?? cfg.defaultSummaryLanguage ?? 'auto',
   };
   const recentFiles = new Map();
+  const createArchitectureDocument = (cwd, scope) => {
+    const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
+    if (existsSync(target.absolute)) return { created: false, target };
+    const parentDir = join(target.absolute, "..");
+    if (!existsSync(parentDir) || !statSync(parentDir).isDirectory()) throw new Error("scope folder does not exist: " + scope);
+    const normalizedScope = toPosix(String(scope ?? ".")).replace(/\/+$/, "");
+    const index = normalizedScope.length === 0 || normalizedScope === "."
+      ? ensureIndex(cwd, indexOptions)
+      : buildIndex(join(cwd, normalizedScope), { ...indexOptions, write: false });
+    const text = renderArchitectureDoc({ scope, docName: cfg.architectureDocName, index });
+    writeFileSync(target.absolute, text, "utf8");
+    return { created: true, target };
+  };
   const queuedIndexes = new Set();
   const architectureAsked = new Set();
+  const architecturePending = new Map();
 
   if (!cfg.enabled || isMasterDisabled()) {
     const persistedDisabled = readPersistedState({ indexDir: cfg.indexDir }).home ?? {};
@@ -282,13 +296,8 @@ export function apply(ctx, config = {}) {
           return doc === null ? { text: "missing: " + target.relative } : { text: clampText(doc.text, 8000) };
         }
         if (action === "create") {
-          if (existsSync(target.absolute)) return { text: "already exists: " + target.relative };
-          const index = ensureIndex(cwd, indexOptions);
-          const parentDir = join(target.absolute, "..");
-          if (!existsSync(parentDir) || !statSync(parentDir).isDirectory()) return { text: "scope folder does not exist: " + scope };
-          const text = renderArchitectureDoc({ scope, docName: cfg.architectureDocName, index });
-          writeFileSync(target.absolute, text, "utf8");
-          return { text: "created: " + target.relative };
+          const created = createArchitectureDocument(cwd, scope);
+          return { text: created.created ? "created: " + created.target.relative : "already exists: " + created.target.relative };
         }
         if (action === "update") {
           const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
@@ -395,6 +404,42 @@ export function apply(ctx, config = {}) {
           const results = searchIndex(index, query, 12);
           return { kind: 'success', text: commandTextList([`Compaction-Fidelity lookup "${query}":`, ...results.map((entry) => entry.path.length > 0 ? `- [${entry.kind}] ${entry.path} — ${entry.why}` : `- command: ${entry.why}`)]) };
         }
+        case 'architecture':
+        case 'arch': {
+          if (cfg.architectureDoc === false) return { kind: 'error', text: '架构文档功能已在配置中禁用。' };
+          const action = (rest[0] ?? 'check').toLowerCase();
+          const scope = rest[1] ?? '.';
+          try {
+            const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
+            if (action === 'check') {
+              return { kind: 'success', text: existsSync(target.absolute) ? `已存在：${target.relative}` : `不存在：${target.relative}` };
+            }
+            if (action === 'read') {
+              const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
+              return doc === null
+                ? { kind: 'error', text: `不存在：${target.relative}` }
+                : { kind: 'success', text: clampText(doc.text, 8000) };
+            }
+            if (action === 'create') {
+              const created = createArchitectureDocument(cwd, scope);
+              return { kind: 'success', text: created.created ? `已创建：${created.target.relative}` : `已存在：${created.target.relative}` };
+            }
+            if (action === 'update') {
+              const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
+              if (doc === null) return { kind: 'error', text: `不存在：${target.relative}` };
+              const summary = rest.slice(2).join(' ').trim();
+              if (summary.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity architecture update <scope> <summary>' };
+              const next = appendArchitectureUpdate(doc.text, { scope, summary, changedFiles: [] });
+              const validation = validateArchitectureDoc(next);
+              if (!validation.ok) return { kind: 'error', text: '架构文档校验失败：' + validation.errors.join('; ') };
+              writeFileSync(target.absolute, next, 'utf8');
+              return { kind: 'success', text: `已追加更新：${target.relative}` };
+            }
+            return { kind: 'error', text: '用法：/compaction-fidelity architecture check | read | create | update <scope> [summary]' };
+          } catch (error) {
+            return { kind: 'error', text: `架构文档命令失败：${error instanceof Error ? error.message : String(error)}` };
+          }
+        }
         case 'purge': {
           if (!rest.includes('--yes')) return { kind: 'error', text: `这会删除 ${cwd}/${cfg.indexDir}。确认后运行 /compaction-fidelity purge --yes` };
           if (!isSafeRelativePath(cfg.indexDir)) return { kind: 'error', text: 'indexDir 不安全，拒绝删除。' };
@@ -453,6 +498,7 @@ export function apply(ctx, config = {}) {
       '- /compaction-fidelity brief',
       '- /compaction-fidelity anchors <file>',
       '- /compaction-fidelity lookup <query>',
+      '- /compaction-fidelity architecture check | read | create | update [scope] [summary]',
       '- /compaction-fidelity purge --yes',
       '模型工具：compaction-fidelity-brief, compaction-fidelity-lookup, compaction-fidelity-architecture',
     ]);
@@ -498,12 +544,44 @@ export function apply(ctx, config = {}) {
       if (cfg.architectureDoc && getGlobalState()?.enabled !== false && !isMasterDisabled()) {
         const askedCwd = workspaceOf(agent);
         const last = lastUserText(decision?.messages ?? []);
+        const askedSession = String(agent?.session?.id ?? "session");
         if (askedCwd && last.length > 0) {
+          const pending = architecturePending.get(askedSession);
+          if (pending !== undefined) {
+            const normalized = last.trim().toLowerCase();
+            const declined = /^(不|不用|不需要|跳过|取消|no|skip|cancel)[。.!！?？\s]*$/.test(normalized);
+            const consented = /^(创建|创建吧|可以|可以创建|好的|好|同意|确认|是|是的|yes|y|ok|okay|create|do it|go ahead)[。.!！?？\s]*$/.test(normalized);
+            let chosen = null;
+            if (pending.kind === "choose") {
+              chosen = pending.candidates.find((item) => {
+                const rel = item.relativeDir.toLowerCase();
+                const base = rel.split("/").pop();
+                return normalized.includes(rel) || (base !== undefined && normalized.includes(base));
+              }) ?? null;
+            }
+            if (declined) {
+              architectureAsked.add(pending.key);
+              architecturePending.delete(askedSession);
+            } else if ((pending.kind === "create" && consented) || chosen !== null) {
+              const scope = pending.kind === "create" ? pending.scope : chosen.relativeDir;
+              try {
+                const created = createArchitectureDocument(askedCwd, scope);
+                architectureAsked.add(pending.key);
+                architecturePending.delete(askedSession);
+                const notice = created.created
+                  ? "[Compaction-Fidelity] 已创建 " + created.target.relative + "。"
+                  : "[Compaction-Fidelity] 已存在 " + created.target.relative + "。";
+                const message = createUserMessage({ content: [{ type: "text", text: notice }], source: PRODUCER_SOURCE });
+                return { ...decision, messages: [...(decision?.messages ?? []), message] };
+              } catch (error) {
+                ctx.logger?.warn?.("compaction-fidelity architecture create failed: " + (error instanceof Error ? error.message : String(error)));
+              }
+            }
+          }
           const detection = detectTaskFolders([{ role: "user", content: [{ type: "text", text: last }] }], askedCwd, { docName: cfg.architectureDocName });
           const candidates = detection?.candidates ?? [];
           if (candidates.length > 0) {
             const choice = detection.ambiguous ? candidates.slice(0, 5) : [detection.primary];
-            const askedSession = String(agent?.session?.id ?? "session");
             const key = askedSession + "|" + choice.map((item) => item.relativeDir).join("|");
             if (!architectureAsked.has(key)) {
               let text = "";
@@ -520,6 +598,9 @@ export function apply(ctx, config = {}) {
                   const oldest = architectureAsked.values().next().value;
                   if (oldest !== undefined) architectureAsked.delete(oldest);
                 }
+                architecturePending.set(askedSession, detection.ambiguous
+                  ? { kind: "choose", candidates: choice, key }
+                  : { kind: "create", scope: detection.primary.relativeDir, key });
                 const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
                 return { ...decision, messages: [...(decision?.messages ?? []), message] };
               }
@@ -572,6 +653,8 @@ export function apply(ctx, config = {}) {
 }
 
 export default { name, inject, apply };
+
+
 
 
 

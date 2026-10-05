@@ -503,6 +503,7 @@ function hydrateIndex(index) {
 
 export function buildIndex(root, options = {}) {
   const index = buildIndexData(resolve(root), options);
+  if (options.write === false) return hydrateIndex(index);
   const indexDir = assertSafeIndexDir(index.root, index.indexDir);
   ensureDirSync(indexDir);
   writeJsonSync(join(indexDir, 'index.json'), index);
@@ -695,5 +696,6 @@ export function briefForRoot(root, indexDir = DEFAULT_INDEX_DIR) {
   const index = loadIndex(root, indexDir);
   return index === null ? null : buildBrief(index);
 }
+
 
 

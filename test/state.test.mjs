@@ -6,11 +6,11 @@ import { join } from 'node:path';
 import { defaultRuntimeState, isMasterDisabled, mergeRuntimeState, normalizeThreshold, parseTokenCount, resolveAbsoluteThresholdPlan, resolveRetainTokens, resolveThresholdPlan } from '../src/state.mjs';
 
 test('parseTokenCount supports k/m and raw integers', () => {
-  assert.equal(parseTokenCount('256k'), 262144);
-  assert.equal(parseTokenCount('512K'), 524288);
-  assert.equal(parseTokenCount('600k'), 614400);
-  assert.equal(parseTokenCount('800k'), 819200);
-  assert.equal(parseTokenCount('1m'), 1048576);
+  assert.equal(parseTokenCount('256k'), 256000);
+  assert.equal(parseTokenCount('512K'), 512000);
+  assert.equal(parseTokenCount('600k'), 600000);
+  assert.equal(parseTokenCount('800k'), 800000);
+  assert.equal(parseTokenCount('1m'), 1000000);
   assert.equal(parseTokenCount(300000), 300000);
   assert.throws(() => parseTokenCount('nope'), /unsupported token count/);
 });
@@ -23,10 +23,10 @@ test('threshold hard bounds reject 0 and values above 1M', () => {
 });
 
 test('normalizeThreshold maps defaults', () => {
-  assert.deepEqual(normalizeThreshold('256k'), { mode: 'tokens', tokens: 262144, label: '256k' });
-  assert.deepEqual(normalizeThreshold('350k'), { mode: 'tokens', tokens: 358400, label: '350k' });
-  assert.deepEqual(normalizeThreshold('600k'), { mode: 'tokens', tokens: 614400, label: '600k' });
-  assert.deepEqual(normalizeThreshold('800k'), { mode: 'tokens', tokens: 819200, label: '800k' });
+  assert.deepEqual(normalizeThreshold('256k'), { mode: 'tokens', tokens: 256000, label: '256k' });
+  assert.deepEqual(normalizeThreshold('350k'), { mode: 'tokens', tokens: 350000, label: '350k' });
+  assert.deepEqual(normalizeThreshold('600k'), { mode: 'tokens', tokens: 600000, label: '600k' });
+  assert.deepEqual(normalizeThreshold('800k'), { mode: 'tokens', tokens: 800000, label: '800k' });
   assert.deepEqual(normalizeThreshold('1m'), { mode: 'full', tokens: 1048576, label: '1m' });
   assert.equal(normalizeThreshold(300000).mode, 'tokens');
 });
@@ -50,7 +50,7 @@ test('800k preset is capped to the official window line on a 1M window', () => {
 test('resolveThresholdPlan caps requested thresholds at capacity and preserves full mode', () => {
   const plan = resolveThresholdPlan('256k', 1_000_000, 900_000);
   assert.equal(plan.mode, 'tokens');
-  assert.equal(plan.tokens, 262144);
+  assert.equal(plan.tokens, 256000);
   const capped = resolveThresholdPlan('512k', 1_000_000, 400_000);
   assert.equal(capped.mode, 'full');
   assert.equal(capped.capped, true);
@@ -59,9 +59,9 @@ test('resolveThresholdPlan caps requested thresholds at capacity and preserves f
 });
 
 test('resolveRetainTokens defaults to ten percent capped at 64Ki', () => {
-  assert.equal(resolveRetainTokens(undefined, 262144), 26214);
+  assert.equal(resolveRetainTokens(undefined, 256000), 25600);
   assert.equal(resolveRetainTokens(undefined, 1_048_576), 65536);
-  assert.equal(resolveRetainTokens('32k', 1_048_576), 32768);
+  assert.equal(resolveRetainTokens('32k', 1_048_576), 32000);
 });
 
 test('external master switch file disables runtime state', () => {
@@ -86,7 +86,7 @@ test('resolveAbsoluteThresholdPlan caps the configured threshold by the effectiv
   assert.equal(large.messageBudget, 744_000);
   assert.equal(large.effectiveBudget, 678_464);
   assert.equal(large.plan.mode, 'tokens');
-  assert.equal(large.effectiveThreshold, 524_288);
+  assert.equal(large.effectiveThreshold, 512_000);
 
   const small = resolveAbsoluteThresholdPlan({ threshold: '512k' }, 200_000, 64_000, 65_536);
   assert.equal(small.messageBudget, 136_000);
@@ -109,6 +109,8 @@ test('resolveAbsoluteThresholdPlan rejects unusable capacity', () => {
 test('default summary output budget matches official 65536', () => {
   assert.equal(defaultRuntimeState().summaryMaxTokens, 65536);
   assert.equal(defaultRuntimeState().threshold, '350k');
-  assert.equal(resolveAbsoluteThresholdPlan({ threshold: '350k' }, 1_000_000, 256_000, 65_536).effectiveThreshold, 358400);
+  assert.equal(resolveAbsoluteThresholdPlan({ threshold: '350k' }, 1_000_000, 256_000, 65_536).effectiveThreshold, 350000);
 });
+
+
 

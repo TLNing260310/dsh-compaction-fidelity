@@ -23,7 +23,7 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 
 ## Features
 
-- Dynamic compaction line: `256K` / `350K` / `512K` / `800K (official default)` presets and custom `256 < value < 800 (K)` in the composer next to the model/reasoning selector; Plugin default is `350K`; `800K` is capped to the official 80% window line on a 1M window. 350K is the maintainer personal comfort setting after reviewing DeepSeek V4.1 Flash auto-compaction-line projects; users may override it with a custom valid value.
+- Dynamic compaction line: `256K` / `350K` / `512K` / `800K (official default)` presets and custom `256 < value < 800 (K)` in the composer next to the model/reasoning selector; Plugin default is `350K`; `800K` is capped to the official 80% window line on a 1M window. 350K is the maintainer personal comfort setting after reviewing DeepSeek V4.1 Flash auto-compaction-line projects; users may override it with a custom valid value. K means 1000 tokens, matching the DSH ContextMeter display.
 - Persistent, Git-versioned `.dsh/compaction-fidelity/` project index: module map, architecture-level files, commands, schema/migration anchors.
 - Architecture retrieval anchors: after a file is modified, its architecture-level neighbors/docs/tests are written to `.dsh/compaction-fidelity/anchors.md` and injected into the next step.
 - Lossless retrieval: anchors are pointers; `compaction-fidelity-brief` and `compaction-fidelity-lookup` retrieve exact project structure after compaction.
@@ -95,6 +95,7 @@ The script restores a `compaction-basic` safety net in `minimal` and installs a 
 /compaction-fidelity anchors <file>
 /compaction-fidelity lookup <query>
 /compaction-fidelity purge --yes
+/compaction-fidelity architecture check | read | create | update [scope] [summary]
 ```
 
 Tools: `compaction-fidelity-brief`, `compaction-fidelity-lookup`, `compaction-fidelity-architecture`.
@@ -122,7 +123,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.16`
+- Current: `0.2.0-rc.2.plugin.1.18`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`
@@ -188,6 +189,10 @@ The official DSH 0.2.0 compaction instruction forces English prose for cross-mod
 
 - AOCI-CODE: upstream conceptual reference for project cognition/index/verify.
 - Attribution: THIRD-PARTY-NOTICES.md and licenses/AOCI-FSL-1.1-MIT.txt.
+
+
+
+
 
 
 

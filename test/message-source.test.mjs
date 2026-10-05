@@ -43,6 +43,7 @@ test('no src module builds a plugin message source by hand any more', () => {
 test('the injection sites reference the shared constant', () => {
   const index = readFileSync(join(srcDir, 'index.mjs'), 'utf8');
   const uses = index.match(/source:\s*PRODUCER_SOURCE/g) ?? [];
-  assert.equal(uses.length, 2);
+  assert.equal(uses.length, 3);
   assert.match(index, /import \{ PLUGIN_NAME, PRODUCER_SOURCE \} from '\.\/message-source\.mjs'/);
 });
+

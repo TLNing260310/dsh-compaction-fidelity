@@ -10,11 +10,11 @@ export const MAX_THRESHOLD_TOKENS = 1024 * 1024;
 export const EFFECTIVE_MIN_THRESHOLD_TOKENS = 1024;
 
 export const THRESHOLD_PRESETS = Object.freeze({
-  '256k': 256 * 1024,
-  '350k': 350 * 1024,
-  '512k': 512 * 1024,
-  '600k': 600 * 1024,
-  '800k': 800 * 1024,
+  '256k': 256 * 1000,
+  '350k': 350 * 1000,
+  '512k': 512 * 1000,
+  '600k': 600 * 1000,
+  '800k': 800 * 1000,
   '1m': MAX_THRESHOLD_TOKENS,
 });
 
@@ -45,7 +45,7 @@ export function parseTokenCount(raw) {
   if (match === null) throw new Error(`unsupported token count "${raw}"; use 256k, 350k, 512k, 600k, 800k, 1m, or an integer token count`);
   const value = Number(match[1]);
   const suffix = match[2];
-  const multiplier = suffix === 'm' ? 1024 * 1024 : suffix === 'k' ? 1024 : 1;
+  const multiplier = suffix === 'm' ? 1000 * 1000 : suffix === 'k' ? 1000 : 1;
   const tokens = Math.floor(value * multiplier);
   if (!Number.isFinite(tokens) || tokens <= 0) throw new Error(`token count "${raw}" is not positive`);
   return tokens;
@@ -70,7 +70,7 @@ export function normalizeThreshold(raw) {
   for (const [name, value] of Object.entries(THRESHOLD_PRESETS)) {
     if (value === tokens) return { mode: 'tokens', tokens, label: name };
   }
-  const label = tokens >= 1024 && tokens % 1024 === 0 ? `${tokens / 1024}k` : String(tokens);
+  const label = tokens >= 1000 && tokens % 1000 === 0 ? `${tokens / 1000}k` : String(tokens);
   return { mode: 'tokens', tokens, label };
 }
 
@@ -217,6 +217,7 @@ export function mergeRuntimeState(base = {}, { cwd, indexDir = DEFAULT_INDEX_DIR
   const persisted = readPersistedState({ cwd, indexDir });
   return finalizeRuntimeState(base, { ...persisted, globalState: null });
 }
+
 
 
 

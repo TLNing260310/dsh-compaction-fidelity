@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.18
+
+- Changed K and M threshold units to decimal 1000, matching the DSH ContextMeter display.
+- Added the /compaction-fidelity architecture command for check, read, create, and update.
+- Added consent-driven automatic ARCHITECTURE.md creation after the injected prompt.
+- Scoped generated ARCHITECTURE.md content to the target folder.
+
+
 ## 0.2.0-rc.2.plugin.1.17
 
 Session format v4 compatibility for injected messages.

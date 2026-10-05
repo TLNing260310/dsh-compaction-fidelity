@@ -21,7 +21,7 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 学习参考与选择性集成说明见 REFERENCES.md；安全模型见 SECURITY.md；发布记录见 CHANGELOG.md。本项目代码采用 MIT 协议。
 
 
-- **动态压缩线**：输入区可选 `256K / 350K / 512K / 800K（官方默认）` 预设；插件默认 350K；自定义范围 `256 < 值 < 800（K）`；`800K` 在 1M 窗口会按官方 80% 线（含输出预留）自动封顶。350K 是开发者实际个人体验后体感舒适、并观察 DeepSeek V4.1 Flash 上下文自动压缩线相关项目后认为合理的设置；如有不认同，可在本项目内自行修改自定义有效值。
+- **动态压缩线**：输入区可选 `256K / 350K / 512K / 800K（官方默认）` 预设；插件默认 350K；自定义范围 `256 < 值 < 800（K）`；`800K` 在 1M 窗口会按官方 80% 线（含输出预留）自动封顶。350K 是开发者实际个人体验后体感舒适、并观察 DeepSeek V4.1 Flash 上下文自动压缩线相关项目后认为合理的设置；如有不认同，可在本项目内自行修改自定义有效值。K 表示 1000 tokens，与 DSH ContextMeter 显示一致。
 - **Compaction-Fidelity 项目认知**：确定性扫描工作区，生成随 Git 版本化的 `.dsh/compaction-fidelity/` 索引（模块图、架构文件、命令、数据库结构锚点）。
 - **架构级回查锚点**：修改文件后把该文件的架构级依赖/文档/测试/迁移写入 `.dsh/compaction-fidelity/anchors.md`，并在下一步注入上下文；压缩摘要中也带锚点。
 - **原文不丢失**：锚点只是指针；原始文件与 session log 仍在。`compaction-fidelity-lookup`、`compaction-fidelity-brief` 可在压缩后精确回查。
@@ -200,6 +200,7 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 /compaction-fidelity anchors <file>            输出某文件的架构级锚点
 /compaction-fidelity lookup <query>            按路径/模块/命令关键词搜索索引
 /compaction-fidelity purge --yes               删除当前工作区 .dsh/compaction-fidelity
+/compaction-fidelity architecture check | read | create | update [scope] [summary]
 ```
 
 ### 模型工具
@@ -463,3 +464,12 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 
 
 
+
+
+
+## 15.1 ARCHITECTURE.md 的可靠创建方式
+
+- 回复 创建 可以 好 后，插件会在下一次 pre-step 直接创建对应文件夹的 ARCHITECTURE.md；
+- 也可执行 /compaction-fidelity architecture create 命令直接创建；
+- 生成内容按目标文件夹过滤模块、文件与数据库锚点；
+- update 动作仍然只追加，不覆写原介绍。
