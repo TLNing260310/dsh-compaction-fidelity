@@ -39,3 +39,10 @@ test('extracts workspace-relative file paths from messages', () => {
   assert.deepEqual(files, ['src/app.ts']);
 });
 
+
+test('adds an AOCI-style cognition refresh trigger for architecture scopes', () => {
+  const ledger = extractLedger(messages);
+  const text = buildSummaryInstruction({ language: 'en', ledger, brief: '', anchors: '', architectureDocs: 'DOC', cognitionRefreshScopes: ['dsh-researcher'] });
+  assert.ok(text.includes('<cognition_refresh trigger="context_compaction">'));
+  assert.ok(text.includes('dsh-researcher/ARCHITECTURE.md'));
+});

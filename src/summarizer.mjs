@@ -256,7 +256,7 @@ function languageHeadings(language) {
 
 
 
-export function buildSummaryInstruction({ language = 'auto', ledger, brief = '', anchors = '', constraints = [], architectureDocs = '', maxChars = 24000 } = {}) {
+export function buildSummaryInstruction({ language = 'auto', ledger, brief = '', anchors = '', constraints = [], architectureDocs = '', cognitionRefreshScopes = [], maxChars = 24000 } = {}) {
 
   const resolvedLanguage = language === 'auto' ? (ledger?.language === 'zh' ? 'zh' : ledger?.language === 'mixed' ? 'bilingual' : 'en') : language;
 
@@ -349,9 +349,11 @@ export function buildSummaryInstruction({ language = 'auto', ledger, brief = '',
 
     constraintsText ? `<pinned_constraints>\n${clampText(constraintsText, 2000)}\n</pinned_constraints>` : '',
     architectureDocs ? `<architecture_retrieval_docs>\n${clampText(architectureDocs, 8000)}\n</architecture_retrieval_docs>` : '',
+    cognitionRefreshScopes.length > 0 ? `<cognition_refresh trigger="context_compaction">\n${clampText(cognitionRefreshScopes.map((scope) => `- ${scope}/ARCHITECTURE.md`).join('\n'), 1000)}\n压缩结束后请刷新这些 ARCHITECTURE.md；可调用 compaction-fidelity-architecture action=refresh 或执行 /compaction-fidelity architecture refresh <scope>。\n</cognition_refresh>` : '',
   ].filter((part) => part.length > 0).join('\n');
 
 }
+
 
 
 

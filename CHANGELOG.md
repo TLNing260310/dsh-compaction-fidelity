@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.19
+
+AOCI-inspired cognition refresh gate.
+
+- Fixed architecture update ordering so the newest update is last.
+- Added `architecture status` and `architecture refresh` commands and tool actions.
+- Added the semantic_threshold refresh prompt with default 30 changed files.
+- Added a persistent architecture scope registry for cross-session reuse.
+- Added a context_compaction `<cognition_refresh>` block to the summary instruction.
+- `refresh` rebuilds structure blocks while preserving the existing update log.
 ## 0.2.0-rc.2.plugin.1.18
 
 - Changed K and M threshold units to decimal 1000, matching the DSH ContextMeter display.

@@ -1,5 +1,5 @@
 // Folder-scoped AOCI-style architecture retrieval document.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { isSafeRelativePath, toPosix } from "./util.mjs";
 
@@ -157,11 +157,77 @@ export function appendArchitectureUpdate(text, update = {}) {
   if (summary.length === 0) throw new Error("architecture update summary must not be empty");
   const payload = { at, scope, summary, changedFiles: update.changedFiles ?? [], decisions: update.decisions ?? [], constraints: update.constraints ?? [] };
   const block = ["<architecture_update at=\"" + attr(at) + "\" scope=\"" + attr(scope) + "\">", "```json", JSON.stringify(payload, null, 2), "```", "</architecture_update>", ""].join("\n");
-  if (text.includes(marker)) return text.replace(marker, marker + "\n\n" + block);
-  if (text.includes("</architecture_retrieval>")) return text.replace("</architecture_retrieval>", marker + "\n\n" + block + "\n</architecture_retrieval>");
+  const markerIndex = text.indexOf(marker);
+  const closingTag = "</architecture_retrieval>";
+  const closingIndex = text.indexOf(closingTag, markerIndex >= 0 ? markerIndex : 0);
+  const searchEnd = closingIndex >= 0 ? closingIndex : text.length;
+  if (markerIndex >= 0) {
+    const lastUpdateEnd = text.lastIndexOf("</architecture_update>", searchEnd - 1);
+    if (lastUpdateEnd >= markerIndex) {
+      const insertAt = lastUpdateEnd + "</architecture_update>".length;
+      return text.slice(0, insertAt) + "\n\n" + block + text.slice(insertAt);
+    }
+    const insertAt = markerIndex + marker.length;
+    return text.slice(0, insertAt) + "\n\n" + block + text.slice(insertAt);
+  }
+  if (closingIndex >= 0) {
+    return text.slice(0, closingIndex) + marker + "\n\n" + block + "\n" + text.slice(closingIndex);
+  }
   return text.trimEnd() + "\n\n## Update Log\n\n" + marker + "\n\n" + block;
 }
 
+export function preserveArchitectureUpdateLog(oldText, newText) {
+  const marker = "<!-- architecture-update-log -->";
+  const closingTag = "</architecture_retrieval>";
+  const oldStart = oldText.indexOf(marker);
+  const newStart = newText.indexOf(marker);
+  if (oldStart < 0 || newStart < 0) return newText;
+  const oldEnd = oldText.lastIndexOf(closingTag);
+  const newEnd = newText.lastIndexOf(closingTag);
+  if (oldEnd < 0 || newEnd < 0) return newText;
+  const oldLog = oldText.slice(oldStart, oldEnd);
+  return newText.slice(0, newStart) + oldLog + newText.slice(newEnd);
+}
+
+export function countChangedFilesSince(root, scope, sinceMs, options = {}) {
+  const base = resolve(root, scope === "." || scope === undefined ? "" : String(scope));
+  const maxFiles = Number.isInteger(options.maxFiles) && options.maxFiles > 0 ? options.maxFiles : 20000;
+  const exclude = new Set((options.exclude ?? []).map((item) => String(item).toLowerCase()));
+  const ignoreDirs = new Set(["node_modules", ".git", ".dsh", "dist", "build", "target", "coverage", ".next", ".cache"]);
+  const semanticExtensions = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".py", ".go", ".rs", ".java", ".kt", ".kts", ".cs", ".php", ".rb", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp", ".sql", ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".md", ".mdx", ".sh", ".ps1", ".bat", ".cmd"]);
+  const stack = [base];
+  let changed = 0;
+  while (stack.length > 0 && changed < maxFiles) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (changed >= maxFiles) break;
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) {
+        if (ignoreDirs.has(entry.name)) continue;
+        stack.push(join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (exclude.has(entry.name.toLowerCase())) continue;
+      const lowerName = entry.name.toLowerCase();
+      const dot = lowerName.lastIndexOf(".");
+      const extension = dot >= 0 ? lowerName.slice(dot) : "";
+      if (!semanticExtensions.has(extension) && lowerName !== "dockerfile" && lowerName !== "makefile") continue;
+      try {
+        if (statSync(join(dir, entry.name)).mtimeMs > sinceMs) changed += 1;
+      } catch {
+        // ignore unreadable files
+      }
+    }
+  }
+  return changed;
+}
 export function validateArchitectureDoc(text) {
   const errors = [];
   if (!/^---\n[\s\S]*?\n---/m.test(text)) errors.push("missing frontmatter");
@@ -173,4 +239,5 @@ export function validateArchitectureDoc(text) {
   }
   return { ok: errors.length === 0, errors, jsonBlocks };
 }
+
 

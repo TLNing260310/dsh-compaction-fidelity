@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendArchitectureUpdate, detectTaskFolders, renderArchitectureDoc, validateArchitectureDoc } from "../src/architecture-doc.mjs";
+import { appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, renderArchitectureDoc, validateArchitectureDoc } from "../src/architecture-doc.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-"));
 mkdirSync(join(root, "src", "feature"), { recursive: true });
@@ -39,3 +39,20 @@ test("append-only update preserves the original and appends a structured update"
   assert.equal(validation.ok, true);
 });
 
+
+
+test("latest architecture update is appended after older updates", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const first = appendArchitectureUpdate(original, { scope: "src/feature", summary: "first update", at: "2026-01-01T00:00:00.000Z" });
+  const second = appendArchitectureUpdate(first, { scope: "src/feature", summary: "second update", at: "2026-02-01T00:00:00.000Z" });
+  assert.ok(second.indexOf("second update") > second.indexOf("first update"));
+});
+
+test("refresh helper preserves the update log", () => {
+  const original = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [], files: [], commands: [], dbFiles: [] } });
+  const updated = appendArchitectureUpdate(original, { scope: "src/feature", summary: "kept update" });
+  const fresh = renderArchitectureDoc({ scope: "src/feature", index: { archFiles: [{ p: "src/feature/new.ts", kind: "module", imports: [] }], files: [], commands: [], dbFiles: [] } });
+  const merged = preserveArchitectureUpdateLog(updated, fresh);
+  assert.ok(merged.includes("kept update"));
+  assert.ok(merged.includes("src/feature/new.ts"));
+});

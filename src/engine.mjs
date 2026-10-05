@@ -461,9 +461,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     }
 
     let architectureDocs = "";
+    let cognitionRefreshScopes = [];
     try {
       const seenDocs = new Set();
       const docLines = [];
+      const refreshScopes = new Set();
       for (const file of referencedFiles.slice(0, 8)) {
         let dir = file;
         for (let depth = 0; depth < 6; depth += 1) {
@@ -474,12 +476,15 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
           const doc = readArchitectureDoc(cwd, dir, "ARCHITECTURE.md");
           if (doc !== null && !seenDocs.has(doc.relative)) {
             seenDocs.add(doc.relative);
+            const scope = doc.relative === "ARCHITECTURE.md" ? "." : doc.relative.slice(0, doc.relative.length - "ARCHITECTURE.md".length - 1);
+            refreshScopes.add(scope);
             docLines.push("### " + doc.relative + "\n" + clampText(doc.text, 4000));
           }
           if (dir === ".") break;
         }
       }
       architectureDocs = docLines.join("\n\n");
+      cognitionRefreshScopes = [...refreshScopes];
     } catch (error) {
       this.ctx.logger?.warn?.("compaction-fidelity architecture doc lookup failed: " + (error instanceof Error ? error.message : String(error)));
     }
@@ -491,6 +496,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       anchors: anchorText,
       constraints: constraintLedger.constraints,
       architectureDocs,
+      cognitionRefreshScopes,
     });
     const messages = [
       ...(input.messages ?? []),
