@@ -6,6 +6,7 @@ import z from '@deepseek-ai/schemastery';
 import { join } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { anchorsForFile, briefForRoot, loadIndex, updateAnchorsForFiles } from './project-index.mjs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { buildCompensation, buildFingerprint, compareFingerprints } from './fingerprint.mjs';
 import { compareConstraintLedger, extractConstraintLedger } from './constraint-ledger.mjs';
 import { buildFidelityProbes, evaluateFidelityGate } from './fidelity-gate.mjs';
@@ -464,8 +465,15 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     let cognitionRefreshScopes = [];
     try {
       const seenDocs = new Set();
-      const docLines = [];
       const refreshScopes = new Set();
+      const entries = [];
+      const addDoc = (doc, priority) => {
+        if (doc === null || doc === undefined || seenDocs.has(doc.relative)) return;
+        seenDocs.add(doc.relative);
+        const scope = doc.relative === "ARCHITECTURE.md" ? "." : doc.relative.slice(0, doc.relative.length - "ARCHITECTURE.md".length - 1);
+        refreshScopes.add(scope);
+        entries.push({ text: "### " + doc.relative + "\n" + clampText(doc.text, 4000) });
+      };
       for (const file of referencedFiles.slice(0, 8)) {
         let dir = file;
         for (let depth = 0; depth < 6; depth += 1) {
@@ -473,15 +481,45 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
           parts.pop();
           dir = parts.join("/");
           if (dir.length === 0) dir = ".";
-          const doc = readArchitectureDoc(cwd, dir, "ARCHITECTURE.md");
-          if (doc !== null && !seenDocs.has(doc.relative)) {
-            seenDocs.add(doc.relative);
-            const scope = doc.relative === "ARCHITECTURE.md" ? "." : doc.relative.slice(0, doc.relative.length - "ARCHITECTURE.md".length - 1);
-            refreshScopes.add(scope);
-            docLines.push("### " + doc.relative + "\n" + clampText(doc.text, 4000));
-          }
+          addDoc(readArchitectureDoc(cwd, dir, "ARCHITECTURE.md"), 0);
           if (dir === ".") break;
         }
+      }
+      const registryFile = join(cwd, this.fidelityConfig.indexDir, "architecture-scopes.json");
+      if (existsSync(registryFile)) {
+        try {
+          const scopes = JSON.parse(readFileSync(registryFile, "utf8"));
+          if (Array.isArray(scopes)) {
+            const ordered = scopes
+              .map((scope) => {
+                const doc = readArchitectureDoc(cwd, String(scope), "ARCHITECTURE.md");
+                let mtimeMs = 0;
+                if (doc !== null) {
+                  try {
+                    mtimeMs = statSync(doc.absolute).mtimeMs;
+                  } catch {
+                    mtimeMs = 0;
+                  }
+                }
+                return { doc, mtimeMs };
+              })
+              .sort((left, right) => right.mtimeMs - left.mtimeMs);
+            for (const item of ordered.slice(0, 12)) addDoc(item.doc, 1);
+          }
+        } catch {
+          // registry is optional; referenced docs still work
+        }
+      }
+      addDoc(readArchitectureDoc(cwd, ".", "ARCHITECTURE.md"), 2);
+      const maxTotal = 8000;
+      let used = 0;
+      const docLines = [];
+      for (const entry of entries) {
+        const remaining = maxTotal - used;
+        if (remaining < 500) break;
+        const text = entry.text.length > remaining ? clampText(entry.text, remaining) : entry.text;
+        docLines.push(text);
+        used += text.length + 2;
       }
       architectureDocs = docLines.join("\n\n");
       cognitionRefreshScopes = [...refreshScopes];
@@ -552,6 +590,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
 }
 
 export default CompactionFidelityEngine;
+
 
 
 

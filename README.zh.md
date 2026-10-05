@@ -127,7 +127,8 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 | anchors | true | 摘要中注入 Compaction-Fidelity 简览与锚点 |
 | anchorsPerFile | 8 | 每文件最多锚点数 |
 | indexDir | .dsh/compaction-fidelity | 索引目录（工作区相对路径） |
-| architectureRefreshThreshold | 30 | scope 内变更文件达到该数量时，pre-step 注入 ARCHITECTURE.md 刷新提示 |
+| architectureRefreshThreshold | 30 | scope 内语义变化分达到该值时，pre-step 注入 ARCHITECTURE.md 刷新提示 |
+| architectureSingleFileChangeThreshold | 300 | 单个核心文件变更行数达到该值时强制触发刷新 |
 
 ### 运行时命令
 
@@ -407,10 +408,13 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
   - 可写入 AOCI 风格缩写/模块约定，便于用少量字母定位模块；
 - AOCI 风格认知刷新门控：
   - 对齐状态：`/compaction-fidelity architecture status <scope>`；
-  - 语义阈值：scope 内自上次文档更新后的变更文件数达到 `architectureRefreshThreshold`（默认 30）时，插件会在 pre-step 注入刷新提示；
-  - 上下文压缩：压缩输入引用到 ARCHITECTURE.md 时，摘要指令会带 `<cognition_refresh trigger="context_compaction">`；
+  - 语义阈值：scope 内自上次文档更新后的语义变化分达到 `architectureRefreshThreshold`（默认 30）时，插件会在 pre-step 注入刷新提示；单文件变更达到 `architectureSingleFileChangeThreshold`（默认 300）时强制触发；
+  - 上下文压缩：压缩输入引用到 ARCHITECTURE.md 时，摘要指令会带 `<cognition_refresh trigger="context_compaction">`，并按引用文档、已登记 scope、根文档的优先级收集；
   - 结构刷新：`/compaction-fidelity architecture refresh <scope>` 重建模块图、入口点与命令锚点，同时保留原有 Update Log；
   - 已登记 scope 记录于 `.dsh/compaction-fidelity/architecture-scopes.json`，可跨会话复用；
+  - 写入安全：跨进程锁 + CAS + 同目录 AtomicWrite，冲突明确报错；
+  - 变更检测：Git status/diff 优先，内容 hash 其次，mtime 仅作降级；
+  - 语义变化分：文件权重 + 单文件大变更强制触发；
 - 工具：`compaction-fidelity-architecture`，动作为 `check | read | create | refresh | status | update`；
 - 总开关关闭时不检测、不询问、不创建。
 
@@ -480,4 +484,5 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 - 也可执行 /compaction-fidelity architecture create 命令直接创建；
 - 生成内容按目标文件夹过滤模块、文件与数据库锚点；
 - update 动作仍然只追加，不覆写原介绍。
+
 

@@ -27,7 +27,7 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Persistent, Git-versioned `.dsh/compaction-fidelity/` project index: module map, architecture-level files, commands, schema/migration anchors.
 - Architecture retrieval anchors: after a file is modified, its architecture-level neighbors/docs/tests are written to `.dsh/compaction-fidelity/anchors.md` and injected into the next step.
 - Lossless retrieval: anchors are pointers; `compaction-fidelity-brief` and `compaction-fidelity-lookup` retrieve exact project structure after compaction.
-- AOCI-inspired architecture refresh gate: semantic change threshold, `status` / `refresh` commands, persistent scope registry, context-compaction refresh trigger, and append-only updates whose latest entry is last.
+- AOCI-inspired architecture refresh gate: `status` / `refresh` commands, persistent scope registry, context-compaction priority collection, Git + content-hash change detection, weighted semantic score, and append-only updates whose latest entry is last; architecture writes use a cross-process lock + CAS + atomic rename.
 - One master switch: installing the bundle enables everything; removing it restores the built-in DSH presets; `/compaction-fidelity on|off` switches the whole plugin at runtime.
 - Cross-lingual fidelity fingerprint: freezes exact values, CJK bigrams, and structure before compaction, compares the generated summary, emits L0–L3 levels, appends a `fidelity_compensation` block for missing exact values, and writes metrics to `.dsh/compaction-fidelity/fingerprints/`.
 - Language policy: default `auto` follows the session language (no double translation); `en` writes model prose in English but preserves verbatim user input and exact values.
@@ -124,7 +124,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.19`
+- Current: `0.2.0-rc.2.plugin.1.20`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`
@@ -190,6 +190,7 @@ The official DSH 0.2.0 compaction instruction forces English prose for cross-mod
 
 - AOCI-CODE: upstream conceptual reference for project cognition/index/verify.
 - Attribution: THIRD-PARTY-NOTICES.md and licenses/AOCI-FSL-1.1-MIT.txt.
+
 
 
 

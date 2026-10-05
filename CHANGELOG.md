@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.20
+
+P0 safety foundation.
+
+- Architecture document writes now use a cross-process lock, compare-and-swap retry, and same-directory atomic rename.
+- Change detection now prefers git status/diff, falls back to per-file content hashes, and only uses mtime as a last resort.
+- Semantic change detection uses weighted scores plus a single-file large-change force trigger.
+- Compaction retrieval now includes referenced docs, registered scopes, and the workspace root doc with a priority budget.
+- Added architecture-baseline.json and persisted architecture scope registry.
+- Added architecture-io.mjs and architecture-changes.mjs with dedicated tests.
 ## 0.2.0-rc.2.plugin.1.19
 
 AOCI-inspired cognition refresh gate.

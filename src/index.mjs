@@ -28,8 +28,10 @@ import {
 } from './state.mjs';
 import { clampText, isSafeRelativePath, normalizeRelPath, toPosix } from './util.mjs';
 import { PLUGIN_NAME, PRODUCER_SOURCE } from './message-source.mjs';
-import { architectureDocExists, appendArchitectureUpdate, countChangedFilesSince, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc } from './architecture-doc.mjs';
+import { architectureDocExists, appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc } from './architecture-doc.mjs';
 
+import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './architecture-io.mjs';
+import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 export const inject = ['commands', 'tools'];
 
@@ -62,6 +64,7 @@ function normalizeConfig(config = {}) {
     maxFileBytes: Number.isInteger(config.maxFileBytes) && config.maxFileBytes > 0 ? config.maxFileBytes : 1024 * 1024,
     archFilesLimit: Number.isInteger(config.archFilesLimit) && config.archFilesLimit > 0 ? config.archFilesLimit : 60,
     architectureRefreshThreshold: Number.isInteger(config.architectureRefreshThreshold) && config.architectureRefreshThreshold > 0 && config.architectureRefreshThreshold <= 100000 ? config.architectureRefreshThreshold : 30,
+    architectureSingleFileChangeThreshold: Number.isInteger(config.architectureSingleFileChangeThreshold) && config.architectureSingleFileChangeThreshold > 0 ? config.architectureSingleFileChangeThreshold : 300,
   };
 }
 
@@ -127,13 +130,15 @@ export function apply(ctx, config = {}) {
   const recentFiles = new Map();
   const createArchitectureDocument = (cwd, scope) => {
     const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
-    if (existsSync(target.absolute)) return { created: false, target };
     const parentDir = join(target.absolute, "..");
     if (!existsSync(parentDir) || !statSync(parentDir).isDirectory()) throw new Error("scope folder does not exist: " + scope);
-    const index = buildArchitectureIndex(cwd, scope);
-    const text = renderArchitectureDoc({ scope, docName: cfg.architectureDocName, index });
-    writeFileSync(target.absolute, text, "utf8");
-    return { created: true, target };
+    const mutation = mutateArchitectureDocument(target.absolute, (current) => {
+      if (current !== null) return null;
+      const index = buildArchitectureIndex(cwd, scope);
+      return renderArchitectureDoc({ scope, docName: cfg.architectureDocName, index });
+    });
+    if (mutation.changed) updateArchitectureBaseline(cwd, scope);
+    return { created: mutation.changed, target };
   };
   const buildArchitectureIndex = (cwd, scope) => {
     const normalizedScope = toPosix(String(scope ?? ".")).replace(/\/+$/, "");
@@ -158,7 +163,7 @@ export function apply(ctx, config = {}) {
     try {
       const dir = join(cwd, cfg.indexDir);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(architectureRegistryPath(cwd), JSON.stringify([...scopes].sort(), null, 2), "utf8");
+      atomicWriteArchitectureFile(architectureRegistryPath(cwd), JSON.stringify([...scopes].sort(), null, 2));
     } catch {
       // best-effort persistence only
     }
@@ -174,15 +179,31 @@ export function apply(ctx, config = {}) {
   };
   const refreshArchitectureDocument = (cwd, scope) => {
     const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
-    const existing = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
-    const structure = renderArchitectureDoc({
-      scope,
-      docName: cfg.architectureDocName,
-      index: buildArchitectureIndex(cwd, scope),
+    let existed = false;
+    const mutation = mutateArchitectureDocument(target.absolute, (current) => {
+      existed = current !== null;
+      const structure = renderArchitectureDoc({
+        scope,
+        docName: cfg.architectureDocName,
+        index: buildArchitectureIndex(cwd, scope),
+      });
+      return current === null ? structure : preserveArchitectureUpdateLog(current, structure);
     });
-    const text = existing === null ? structure : preserveArchitectureUpdateLog(existing.text, structure);
-    writeFileSync(target.absolute, text, "utf8");
-    return { target, refreshed: existing !== null };
+    if (mutation.changed) updateArchitectureBaseline(cwd, scope);
+    return { target, refreshed: mutation.changed && existed };
+  };
+  const updateArchitectureBaseline = (cwd, scope) => {
+    try {
+      const baseline = computeArchitectureBaseline(cwd, scope, {
+        indexDir: cfg.indexDir,
+        maxFiles: cfg.maxFiles,
+        maxFileBytes: cfg.maxFileBytes,
+        docName: cfg.architectureDocName,
+      });
+      writeArchitectureBaseline(cwd, scope, baseline, cfg.indexDir);
+    } catch (error) {
+      ctx.logger?.warn?.("compaction-fidelity architecture baseline failed: " + (error instanceof Error ? error.message : String(error)));
+    }
   };
   const queuedIndexes = new Set();
   const architectureAsked = new Set();
@@ -356,9 +377,9 @@ export function apply(ctx, config = {}) {
           const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
           if (doc === null) return { text: "missing: " + target.relative };
           const stat = statSync(target.absolute);
-          const changed = countChangedFilesSince(cwd, scope, stat.mtimeMs - 1000, { exclude: [cfg.architectureDocName] });
-          const aligned = changed < cfg.architectureRefreshThreshold;
-          return { text: "status: " + (aligned ? "aligned" : "stale") + "; changed=" + changed + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() };
+          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000 });
+          const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
+          return { text: "status: " + (aligned ? "aligned" : "stale") + "; score=" + change.score + "; method=" + change.method + "; forced=" + change.forced + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() };
         }
         if (action === "update") {
           const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
@@ -366,11 +387,16 @@ export function apply(ctx, config = {}) {
           const summary = String(args.summary ?? "").trim();
           if (summary.length === 0) return { text: "action=update requires summary." };
           const changedFiles = String(args.changedFiles ?? "").split(",").map((item) => item.trim()).filter((item) => item.length > 0);
-          const next = appendArchitectureUpdate(doc.text, { scope, summary, changedFiles });
-          const validation = validateArchitectureDoc(next);
-          if (!validation.ok) return { text: "invalid architecture doc: " + validation.errors.join("; ") };
-          writeFileSync(target.absolute, next, "utf8");
+          const mutation = mutateArchitectureDocument(target.absolute, (current) => {
+            if (current === null) return null;
+            const next = appendArchitectureUpdate(current, { scope, summary, changedFiles });
+            const validation = validateArchitectureDoc(next);
+            if (!validation.ok) throw new Error("invalid architecture doc: " + validation.errors.join("; "));
+            return next;
+          });
+          if (!mutation.changed) return { text: "missing: " + target.relative };
           rememberArchitectureScope(exec.agent, scope);
+          if (mutation.changed) updateArchitectureBaseline(cwd, scope);
           return { text: "updated: " + target.relative };
         }
         return { text: "Unknown action: " + action + " (use check | read | create | refresh | status | update)." };
@@ -491,9 +517,9 @@ export function apply(ctx, config = {}) {
               const doc = readArchitectureDoc(cwd, scope, cfg.architectureDocName);
               if (doc === null) return { kind: 'error', text: `不存在：${target.relative}` };
               const stat = statSync(target.absolute);
-              const changed = countChangedFilesSince(cwd, scope, stat.mtimeMs - 1000, { exclude: [cfg.architectureDocName] });
-              const aligned = changed < cfg.architectureRefreshThreshold;
-              return { kind: 'success', text: `对齐状态：${aligned ? "aligned" : "stale"}；变更文件=${changed}；阈值=${cfg.architectureRefreshThreshold}；更新时间=${new Date(stat.mtimeMs).toISOString()}；路径=${target.relative}` };
+              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000 });
+              const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
+              return { kind: 'success', text: `对齐状态：${aligned ? "aligned" : "stale"}；变化分=${change.score}；检测=${change.method}；强制=${change.forced}；阈值=${cfg.architectureRefreshThreshold}；更新时间=${new Date(stat.mtimeMs).toISOString()}；路径=${target.relative}` };
             }
             if (action === 'refresh') {
               const refreshed = refreshArchitectureDocument(cwd, scope);
@@ -505,10 +531,15 @@ export function apply(ctx, config = {}) {
               if (doc === null) return { kind: 'error', text: `不存在：${target.relative}` };
               const summary = rest.slice(2).join(' ').trim();
               if (summary.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity architecture update <scope> <summary>' };
-              const next = appendArchitectureUpdate(doc.text, { scope, summary, changedFiles: [] });
-              const validation = validateArchitectureDoc(next);
-              if (!validation.ok) return { kind: 'error', text: '架构文档校验失败：' + validation.errors.join('; ') };
-              writeFileSync(target.absolute, next, 'utf8');
+              const mutation = mutateArchitectureDocument(target.absolute, (current) => {
+                if (current === null) return null;
+                const next = appendArchitectureUpdate(current, { scope, summary, changedFiles: [] });
+                const validation = validateArchitectureDoc(next);
+                if (!validation.ok) throw new Error('架构文档校验失败：' + validation.errors.join('; '));
+                return next;
+              });
+              if (!mutation.changed) return { kind: 'error', text: `不存在：${target.relative}` };
+              if (mutation.changed) updateArchitectureBaseline(cwd, scope);
               rememberArchitectureScope(invocation.agent, scope);
               return { kind: 'success', text: `已追加更新：${target.relative}` };
             }
@@ -699,8 +730,8 @@ export function apply(ctx, config = {}) {
               } catch {
                 continue;
               }
-              const changed = countChangedFilesSince(askedCwd, scope, docStat.mtimeMs - 1000, { maxFiles: cfg.maxFiles, exclude: [cfg.architectureDocName] });
-              if (changed < cfg.architectureRefreshThreshold) continue;
+              const change = detectSemanticChanges(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000 });
+              if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
               const notifyKey = askedSession + "|" + scope + "|" + docStat.mtimeMs;
               if (architectureRefreshNotified.has(notifyKey)) continue;
               architectureRefreshNotified.add(notifyKey);
@@ -708,7 +739,7 @@ export function apply(ctx, config = {}) {
                 const oldest = architectureRefreshNotified.values().next().value;
                 if (oldest !== undefined) architectureRefreshNotified.delete(oldest);
               }
-              const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，检测到 " + changed + " 个文件变更，阈值 " + cfg.architectureRefreshThreshold + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
+              const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，语义变化分=" + change.score + "，检测方式=" + change.method + (change.forced ? "，单文件大变更强制触发" : "") + "，阈值=" + cfg.architectureRefreshThreshold + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
               const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
               return { ...decision, messages: [...(decision?.messages ?? []), message] };
             }
@@ -760,6 +791,7 @@ export function apply(ctx, config = {}) {
 }
 
 export default { name, inject, apply };
+
 
 
 
