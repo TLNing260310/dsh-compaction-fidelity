@@ -33,6 +33,7 @@ import { architectureDocExists, appendArchitectureUpdate, detectTaskFolders, las
 import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './architecture-io.mjs';
 import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
+import { pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from './reminder-state.mjs';
 export const inject = ['commands', 'tools'];
 
 const TOOL_ID = 'dsh-compaction-fidelity#command';
@@ -109,7 +110,7 @@ function modifiedFilePath(exec, result) {
 
 function formatAnchors(file, anchors) {
   if (anchors === null || anchors === undefined || anchors.length === 0) return `- ${file}: (no architecture anchors found)`;
-  const parts = anchors.map((anchor) => `[${anchor.kind}] ${anchor.id ? `[${anchor.id}] ` : ''}${anchor.canonical ?? anchor.path} — ${anchor.reason}`);
+  const parts = anchors.map((anchor) => `[${anchor.kind}${Number.isFinite(anchor.quality) ? ` q${anchor.quality}` : ''}] ${anchor.id ? `[${anchor.id}] ` : ''}${anchor.canonical ?? anchor.path} — ${anchor.reason}`);
   return `- ${file} → ${parts.join('; ')}`;
 }
 
@@ -147,7 +148,6 @@ export function apply(ctx, config = {}) {
       : buildIndex(join(cwd, normalizedScope), { ...indexOptions, write: false });
   };
   const architectureScopes = new Map();
-  const architectureRefreshNotified = new Set();
   const architectureRegistryPath = (cwd) => join(cwd, cfg.indexDir, "architecture-scopes.json");
   const readArchitectureScopeRegistry = (cwd) => {
     try {
@@ -732,14 +732,16 @@ export function apply(ctx, config = {}) {
               }
               const change = detectSemanticChanges(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000 });
               if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
-              const notifyKey = askedSession + "|" + scope + "|" + docStat.mtimeMs;
-              if (architectureRefreshNotified.has(notifyKey)) continue;
-              architectureRefreshNotified.add(notifyKey);
-              if (architectureRefreshNotified.size > 500) {
-                const oldest = architectureRefreshNotified.values().next().value;
-                if (oldest !== undefined) architectureRefreshNotified.delete(oldest);
-              }
-              const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，语义变化分=" + change.score + "，检测方式=" + change.method + (change.forced ? "，单文件大变更强制触发" : "") + "，阈值=" + cfg.architectureRefreshThreshold + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
+              const now = Date.now();
+              const reminderKey = askedSession + "|" + scope + "|" + docStat.mtimeMs;
+              const reminderStore = readReminderState(askedCwd, cfg.indexDir);
+              const reminder = reminderDecision(reminderStore.entries[reminderKey], now);
+              if (reminder.action !== "inject") continue;
+              reminderStore.entries[reminderKey] = recordReminder(reminderStore.entries[reminderKey], now);
+              pruneReminderState(reminderStore, now);
+              writeReminderState(askedCwd, cfg.indexDir, reminderStore);
+              const stageText = reminder.stage > 1 ? "，提醒阶段=" + reminder.stage : "";
+              const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，语义变化分=" + change.score + "，检测方式=" + change.method + (change.forced ? "，单文件大变更强制触发" : "") + "，阈值=" + cfg.architectureRefreshThreshold + stageText + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
               const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
               return { ...decision, messages: [...(decision?.messages ?? []), message] };
             }
@@ -763,7 +765,7 @@ export function apply(ctx, config = {}) {
         for (const file of files) {
           const anchors = anchorsForFile(cwd, cfg.indexDir, file, cfg.anchorsPerFile) ?? [];
           if (anchors.length === 0) continue;
-          lines.push(`- ${file} → ${anchors.map((anchor) => `${anchor.id ? `[${anchor.id}] ` : ''}${anchor.canonical ?? anchor.path} (${anchor.reason})`).join('; ')}`);
+          lines.push(`- ${file} → ${anchors.map((anchor) => `${anchor.id ? `[${anchor.id}] ` : ''}${anchor.canonical ?? anchor.path} (${anchor.kind}${Number.isFinite(anchor.quality) ? ", q" + anchor.quality : ""}: ${anchor.reason})`).join('; ')}`);
         }
         pending.clear();
         if (lines.length === 0) return decision;
@@ -791,6 +793,7 @@ export function apply(ctx, config = {}) {
 }
 
 export default { name, inject, apply };
+
 
 
 

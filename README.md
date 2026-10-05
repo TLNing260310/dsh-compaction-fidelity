@@ -29,6 +29,9 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Lossless retrieval: anchors are pointers; `compaction-fidelity-brief` and `compaction-fidelity-lookup` retrieve exact project structure after compaction.
 - AOCI-inspired architecture refresh gate: `status` / `refresh` commands, persistent scope registry, context-compaction priority collection, Git + content-hash change detection, weighted semantic score, and append-only updates whose latest entry is last; architecture writes use a cross-process lock + CAS + atomic rename.
 - One master switch: installing the bundle enables everything; removing it restores the built-in DSH presets; `/compaction-fidelity on|off` switches the whole plugin at runtime.
+- A/B fingerprint calibration: raw-summary metrics and post-compensation metrics are compared per language in `.dsh/compaction-fidelity/fidelity-calibration.json`; calibrated levels activate after 8 samples per language while the gate keeps using the raw deterministic level.
+- Anchor quality: anchors are deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
+- Persistent reminder backoff: architecture refresh reminders back off 0 -> 5 minutes -> 30 minutes, then become status-only; state lives in `.dsh/compaction-fidelity/architecture-reminders.json`.
 - Cross-lingual fidelity fingerprint: freezes exact values, CJK bigrams, and structure before compaction, compares the generated summary, emits L0–L3 levels, appends a `fidelity_compensation` block for missing exact values, and writes metrics to `.dsh/compaction-fidelity/fingerprints/`.
 - Language policy: default `auto` follows the session language (no double translation); `en` writes model prose in English but preserves verbatim user input and exact values.
 
@@ -53,8 +56,8 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 
 ## Known boundaries
 
-- Fingerprint recall vs downstream QA correlation is not A/B tested yet.
-- Compensation/anchors may dilute attention; a 2048-token soft cap and category priority are implemented, but the optimum still needs A/B calibration.
+- A/B fingerprint calibration now records raw-summary vs post-compensation metrics per language, but downstream QA correlation is not measured yet.
+- Compensation/anchors may dilute attention; a 2048-token soft cap, category priority, and anchor quality caps are implemented, but the optimum thresholds still need more calibration samples.
 - zh/en/bilingual strategy lacks controlled comparison; constraint ledger not covered.
 - Do not lower the 256K output reserve by default; provider constraint still holds.
 ## Install
@@ -109,6 +112,14 @@ Persistent Git-versioned artifacts, local-first scanning, module/architecture co
 
 The 188K-line Go governance engine, the stdio MCP server and its 9 MCP tools, the full FRAS/Attestation/Ledger/Recovery state machine, agent-written semantic Whole-Index, live database introspection, and a full tree-sitter call graph. See `README.zh.md` and `THIRD-PARTY-NOTICES.md` for details.
 
+
+Explicitly not ported or not planned:
+
+- FRAS semantic authoring, Go governance state machine, stdio MCP server, full Attestation/Ledger/Recovery state machine.
+- Managed Scope tri-role `index / observe / exclude`: only `include / exclude` is considered useful for this plugin; `observe` is not planned.
+- `phase_transition` inference: only `semantic_threshold`, `context_compaction`, and explicit architecture commands trigger cognition refresh.
+- Token-level Whole-Index budget (120K/180K/240K): the plugin keeps per-document (4000 chars) and total (8000 chars) retrieval budgets instead.
+- Database credentials/evidence layer: the plugin never reads `.env` or secret files.
 ## Development
 
 ```powershell
@@ -124,7 +135,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.20`
+- Current: `0.2.0-rc.2.plugin.1.21`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`
@@ -190,6 +201,8 @@ The official DSH 0.2.0 compaction instruction forces English prose for cross-mod
 
 - AOCI-CODE: upstream conceptual reference for project cognition/index/verify.
 - Attribution: THIRD-PARTY-NOTICES.md and licenses/AOCI-FSL-1.1-MIT.txt.
+
+
 
 
 

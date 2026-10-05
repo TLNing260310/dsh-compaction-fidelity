@@ -563,16 +563,21 @@ export function computeAnchors(index, relPath, limit = 8) {
   const file = index.filesByPath?.get(normalized);
   if (file === undefined) return [];
   const candidates = [];
+  const candidateKeys = new Set();
   const add = (path, kind, reason, weight) => {
     if (!path || path === normalized) return;
+    const canonical = canonicalCodeId(path);
+    if (candidateKeys.has(canonical)) return;
+    candidateKeys.add(canonical);
     const target = index.filesByPath?.get(path);
     candidates.push({
       path,
       kind: target?.kind ?? kind,
       reason,
       weight,
+      quality: weight,
       id: target?.id ?? null,
-      canonical: canonicalCodeId(path),
+      canonical,
       sha256: typeof target?.hash === 'string' && target.hash.length >= 12 ? target.hash.slice(0, 12) : null,
     });
   };
@@ -598,10 +603,20 @@ export function computeAnchors(index, relPath, limit = 8) {
     for (const dbFile of index.dbFiles ?? []) add(dbFile.p, dbFile.kind, 'database structure related to this file', 60);
   }
   if (index.archSet.has(normalized)) add(normalized, file.kind, 'this file is an architecture-level anchor', 1);
-  return uniqueBy(candidates, (candidate) => candidate.path)
+  const kindCaps = { test: 2, doc: 1, "arch-doc": 1, manifest: 1, db: 2, database: 2 };
+  const kindCounts = new Map();
+  const result = [];
+  for (const candidate of uniqueBy(candidates, (item) => item.canonical ?? item.path)
     .filter((candidate) => candidate.path !== normalized)
-    .sort((a, b) => b.weight - a.weight)
-    .slice(0, limit);
+    .sort((left, right) => (right.quality ?? right.weight) - (left.quality ?? left.weight))) {
+    const cap = kindCaps[candidate.kind] ?? 3;
+    const count = kindCounts.get(candidate.kind) ?? 0;
+    if (count >= cap) continue;
+    kindCounts.set(candidate.kind, count + 1);
+    result.push(candidate);
+    if (result.length >= limit) break;
+  }
+  return result;
 }
 
 function renderAnchorMap(anchorState) {
@@ -645,7 +660,9 @@ export function anchorsForFile(root, indexDir, file, limit = 8) {
   const rel = toPosix(file);
   const stateFile = join(resolve(root), indexDir, 'anchors.json');
   const anchorState = readJsonIfExists(stateFile, { byFile: {} });
-  return anchorState.byFile?.[rel] ?? computeAnchors(index, rel, limit);
+  const stored = anchorState.byFile?.[rel];
+  if (Array.isArray(stored) && stored.length > 0 && stored.every((anchor) => Number.isFinite(anchor?.quality))) return stored;
+  return computeAnchors(index, rel, limit);
 }
 
 export function searchIndex(index, query, limit = 12) {
@@ -696,6 +713,8 @@ export function briefForRoot(root, indexDir = DEFAULT_INDEX_DIR) {
   const index = loadIndex(root, indexDir);
   return index === null ? null : buildBrief(index);
 }
+
+
 
 
 

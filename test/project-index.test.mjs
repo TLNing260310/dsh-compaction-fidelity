@@ -53,6 +53,8 @@ test('builds a persistent Compaction-Fidelity index, anchors, brief, search, and
     const anchors = computeAnchors(index, 'src/foo/bar.ts', 8);
     assert.ok(anchors.some((anchor) => anchor.path === 'src/core/runtime.ts'), JSON.stringify(anchors));
     assert.ok(anchors.some((anchor) => anchor.path === 'src/foo/bar.test.ts'), JSON.stringify(anchors));
+    assert.ok(anchors.every((anchor) => Number.isFinite(anchor.quality)), JSON.stringify(anchors));
+    assert.equal(new Set(anchors.map((anchor) => anchor.canonical)).size, anchors.length, JSON.stringify(anchors));
 
     const state = updateAnchorsForFiles(root, '.dsh/compaction-fidelity', ['src/foo/bar.ts']);
     assert.ok(state.byFile['src/foo/bar.ts'].length > 0);
@@ -74,3 +76,4 @@ test('builds a persistent Compaction-Fidelity index, anchors, brief, search, and
     rmSync(root, { recursive: true, force: true });
   }
 });
+

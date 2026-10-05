@@ -9,6 +9,7 @@ import { anchorsForFile, briefForRoot, loadIndex, updateAnchorsForFiles } from '
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { buildCompensation, buildFingerprint, compareFingerprints } from './fingerprint.mjs';
 import { compareConstraintLedger, extractConstraintLedger } from './constraint-ledger.mjs';
+import { buildFidelitySample, calibrateFidelityLevel, recordFidelitySample } from './fidelity-calibration.mjs';
 import { buildFidelityProbes, evaluateFidelityGate } from './fidelity-gate.mjs';
 import { readArchitectureDoc } from './architecture-doc.mjs';
 import { pickRetentionRange } from './range.mjs';
@@ -384,7 +385,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     });
   }
 
-  async persistFingerprint(agent, before, after, comparison, indexDir = this.fidelityConfig.indexDir, compensation = undefined, fidelityGate = undefined, constraintComparison = undefined) {
+  async persistFingerprint(agent, before, after, comparison, indexDir = this.fidelityConfig.indexDir, compensation = undefined, fidelityGate = undefined, constraintComparison = undefined, calibration = undefined) {
     try {
       const cwd = agent?.session?.header?.cwd ?? process.cwd();
       const sessionId = String(agent?.session?.id ?? 'unknown').replace(/[^A-Za-z0-9._-]/g, '_');
@@ -405,6 +406,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         ...(compensation === undefined ? {} : { compensation: { maxTokens: compensation.maxTokens, tokens: compensation.tokens, truncated: compensation.truncated, entriesByCategory: compensation.entriesByCategory, omittedByCategory: compensation.omittedByCategory } }),
         ...(fidelityGate === undefined ? {} : { gate: fidelityGate }),
         ...(constraintComparison === undefined ? {} : { constraints: constraintComparison }),
+        ...(calibration === undefined ? {} : { calibration }),
         before: summarizeSide(before),
         after: summarizeSide(after),
       };
@@ -449,7 +451,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
             const anchors = anchorsForFile(cwd, runtime.indexDir, file, this.fidelityConfig.anchorsPerFile);
             if (anchors === null || anchors.length === 0) continue;
             lines.push(`- ${file}`);
-            for (const anchor of anchors) lines.push(`  - [${anchor.kind}] ${anchor.path} — ${anchor.reason}`);
+            for (const anchor of anchors) lines.push(`  - [${anchor.kind}${Number.isFinite(anchor.quality) ? ` q${anchor.quality}` : ''}] ${anchor.path} — ${anchor.reason}`);
           }
           anchorText = lines.join('\n');
         }
@@ -576,7 +578,31 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     }
     const gate = evaluateFidelityGate({ fingerprint: fidelity, constraints: constraintLedger, probes: buildFidelityProbes(preFingerprint), summaryText: summary.map((block) => block.text).join("\n") });
     if (!gate.ok) this.ctx.logger?.warn?.("compaction-fidelity gate: " + gate.failures.join(", "));
-    await this.persistFingerprint(agent, preFingerprint, postFingerprint, fidelity, runtime.indexDir, compensation, gate, constraintComparison);
+    const finalFingerprint = buildFingerprint([{ role: "assistant", content: summary.map((block) => ({ type: "text", text: block.text })) }]);
+    const finalFidelity = compareFingerprints(preFingerprint, finalFingerprint);
+    const anchorQuality = {
+      files: referencedFiles.length,
+      entries: (anchorText.match(/^  - /gm) ?? []).length,
+      chars: anchorText.length,
+    };
+    let calibration = null;
+    try {
+      const sample = buildFidelitySample({
+        language: preFingerprint.language,
+        rawComparison: fidelity,
+        finalComparison: finalFidelity,
+        compensation,
+        constraintComparison,
+        anchorQuality,
+        preFingerprint,
+      });
+      const store = recordFidelitySample(cwd, runtime.indexDir, sample);
+      const level = calibrateFidelityLevel(finalFidelity, store.samples, preFingerprint.language);
+      calibration = { sample, level: level.level, calibrated: level.calibrated, score: level.score, sampleCount: level.sampleCount, thresholds: level.thresholds, finalFidelity };
+    } catch (error) {
+      this.ctx.logger?.warn?.("compaction-fidelity calibration failed: " + (error instanceof Error ? error.message : String(error)));
+    }
+    await this.persistFingerprint(agent, preFingerprint, postFingerprint, fidelity, runtime.indexDir, compensation, gate, constraintComparison, calibration);
     return {
       summary,
       rawOutput,
@@ -590,6 +616,8 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
 }
 
 export default CompactionFidelityEngine;
+
+
 
 
 

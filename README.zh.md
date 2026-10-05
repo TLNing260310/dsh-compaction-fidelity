@@ -28,6 +28,9 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - **总开关/总闸**：安装 bundle 即整体启用；卸载即恢复内置 preset；运行时 `/compaction-fidelity on|off` 在插件压缩与官方压缩之间整体切换。
 - **跨语言保真指纹**：压缩前冻结精确值、CJK 二元语义单元与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
 - **语言策略**：默认 `auto` 跟随会话语言，避免翻译两次；`en` 模式英文写摘要，但用户原话与精确值原样保留、不翻译。
+- **A/B 指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每种语言累计 8 个样本后给出校准分级，门控仍使用原始确定性分级。
+- **锚点质量**：锚点按 canonical identity 去重，按关系强度评分，并按类别限流（测试 2、文档 1、数据库 2）。
+- **提醒退避持久化**：架构刷新提醒按 0 -> 5 分钟 -> 30 分钟退避，之后只保留 status 可见；状态存于 `.dsh/compaction-fidelity/architecture-reminders.json`。
 
 > 本插件按 DSH Desktop 0.2.0-rc.2 生成并锁定 peer 版本。0.1.5-rc.3 的 preset / 压缩 API 不同，不能混用。
 >
@@ -62,8 +65,8 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 
 ## 已知边界与验证方向
 
-- 指纹召回与下游 QA 相关性未 A/B；L0–L3 阈值需校准。
-- 补偿块/锚点可能稀释注意力；已实现 2048 token 软上限与类别优先级，仍需 A/B 校准最优值。
+- A/B 指纹校准现已记录原始摘要与最终摘要的分语言指标，但下游 QA 相关性仍未测量。
+- 补偿块/锚点可能稀释注意力；已实现 2048 token 软上限、类别优先级与锚点质量限流，最优阈值仍需更多校准样本。
 - zh/en/bilingual 摘要策略缺对照；约束 ledger 尚未覆盖。
 - 不建议默认降低 256K 输出预留；provider 约束仍成立。
 - 256K/350K/512K 自定义线需验证安全收益与信息损失的权衡。
@@ -174,6 +177,9 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 | stdio MCP Server / 9 个 MCP 工具 | 改 DSH 原生工具与命令 | 不需要额外进程 |
 | FRAS/Attestation/Ledger/Recovery 全套治理状态机 | 只保留 index + baseline + verify | 依赖组织治理约定 |
 | Agent 逐批撰写、300K token Whole-Index | 确定性规则索引 + 按需回查 | 防止索引本身挤占上下文 |
+| Managed Scope 三角色 index/observe/exclude | 仅规划 include/exclude | observe 中间态在宿主内插件收益低 |
+| phase_transition 阶段推断 | 不采用自动推断 | 仅保留显式命令、语义分与压缩触发 |
+| Token 级 Whole-Index 预算 120K/180K/240K | 保留单文档 4000 字符 + 总量 8000 字符检索预算 | 避免从压缩保真层滑向索引治理 |
 | 完整 tree-sitter 调用图 | JS/TS/Python/Go/Rust 启发式 import 图 | 第一版不引入语言服务器 |
 | 实时数据库系统目录与 DSN | 只识别 schema/migration 文件 | 本地优先、零凭据、零网络 |
 | Compaction-Fidelity CLI、跨仓库全局索引 | 每工作区一套 .dsh/compaction-fidelity | 与 DSH workspace 隔离一致 |
@@ -226,6 +232,8 @@ dsh plugin --profile web remove dsh-compaction-fidelity
   baseline.json       文件哈希基线
   state.json          当前工作区的运行时开关
 ```
+  fidelity-calibration.json  A/B 指纹校准样本
+  architecture-reminders.json 架构刷新提醒退避状态
 
 建议把这些文件提交到 Git。若项目 .gitignore 忽略了 .dsh，需要显式放行 .dsh/compaction-fidelity。
 
@@ -255,6 +263,10 @@ node scripts/generate-preset-patch.mjs
 | src/summarizer.mjs | 语言检测、精确值账本、摘要指令 |
 | src/project-index.mjs | Compaction-Fidelity 扫描、索引、锚点、简览、搜索、verify |
 | scripts/generate-preset-patch.mjs | 从 DSH 内置 preset 生成覆盖 patch |
+| src/fidelity-calibration.mjs | A/B 指纹度量、分语言校准与样本持久化 |
+| src/reminder-state.mjs | 架构刷新提醒退避与持久化状态 |
+| src/architecture-io.mjs | 锁 + CAS + AtomicWrite 事务原语 |
+| src/architecture-changes.mjs | Git/hash/mtime 变更检测与语义变化分 |
 
 MIT License；上游 AOCI-CODE 的相关版权与许可见 THIRD-PARTY-NOTICES.md 与 licenses/AOCI-FSL-1.1-MIT.txt。
 
@@ -280,6 +292,7 @@ TESTBOX
 ```
 
 - DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
+- 当前版本：0.2.0-rc.2.plugin.1.21。
 - 插件本体为 1.0；功能迭代递增为 1.1、2.0。
 
 - DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。
@@ -323,7 +336,7 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 | 压缩后重新读取认知，不信任摘要 | 摘要规则明确：架构事实只是 locator，恢复后应重读 project.txt / PROJECT.md |
 | Overview 分块交付 | 保留 compaction-fidelity-brief 6000 字符上限；后续可加 cursor 分块 |
 
-明确不采用：Agent 逐条写 FRAS Whole-Index、Go 治理状态机、Attestation/Recovery/Ledger、MCP Server、实时数据库连接。它们成本高，并会让索引本身变成新的上下文负担。
+明确不采用：Agent 逐条写 FRAS Whole-Index、Go 治理状态机、Attestation/Recovery/Ledger、MCP Server、实时数据库连接。Managed Scope observe、phase_transition 自动推断、token 级 Whole-Index 预算也不纳入路线图。它们成本高，并会让索引本身变成新的上下文负担。
 
 ## 11. 阈值有效范围
 

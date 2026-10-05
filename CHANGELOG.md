@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.21
+
+P1 fidelity calibration, anchor quality, and reminder backoff.
+
+- Added per-language A/B fingerprint calibration: raw-summary and post-compensation metrics are recorded in `.dsh/compaction-fidelity/fidelity-calibration.json`.
+- Added calibrated L0-L3 reporting after 8 samples per language; the deterministic gate still uses the raw fingerprint level.
+- Anchors are now deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
+- Architecture refresh reminders now back off from immediate to 5 minutes to 30 minutes and then become status-only.
+- Reminder backoff state is persisted in `.dsh/compaction-fidelity/architecture-reminders.json` and pruned automatically.
+- Added `src/fidelity-calibration.mjs` and `src/reminder-state.mjs` with dedicated tests.
+- Explicitly out of scope: FRAS/Attestation/Ledger/Recovery, MCP server, Managed Scope observe, phase_transition inference, and token-level Whole-Index budgets.
+
 ## 0.2.0-rc.2.plugin.1.20
 
 P0 safety foundation.
