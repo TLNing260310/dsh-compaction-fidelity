@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
 import {
   globToRegExp,
+  isValidScopePattern,
   createWorkspaceFileFilter,
   matchesScopeRules,
   readArchitectureRegistry,
@@ -121,4 +122,42 @@ test("excluded changes are not tracked and re-include rebaselines the current st
   const reincludeChange = detectSemanticChanges(root, "cycle", { indexDir, filterFile: filter });
   assert.equal(reincludeChange.score, 0);
   assert.equal(reincludeChange.forced, false);
+});
+
+test("unsafe scopes and invalid patterns are rejected", () => {
+  assert.throws(() => updateArchitectureScopeRules(root, indexDir, "../outside", { include: ["src/**"] }));
+  assert.equal(isValidScopePattern("../secret"), false);
+  assert.equal(isValidScopePattern("/etc/passwd"), false);
+  assert.equal(isValidScopePattern("C:/Windows"), false);
+  assert.equal(isValidScopePattern("x".repeat(300)), false);
+  assert.equal(isValidScopePattern("src/\u0000evil"), false);
+  assert.equal(globToRegExp("src/\u0000evil"), null);
+  assert.equal(matchesScopeRules("src/a.ts", { include: ["../**"], exclude: [] }), false);
+});
+
+test("unsafe registry keys are ignored and rule lists are capped", () => {
+  const securityRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-security-"));
+  try {
+    mkdirSync(join(securityRoot, indexDir), { recursive: true });
+    writeFileSync(join(securityRoot, indexDir, "architecture-scopes.json"), JSON.stringify({ version: 2, scopes: { "../evil": { include: ["**"] }, safe: { include: [] } } }), "utf8");
+    let registry = readArchitectureRegistry(securityRoot, indexDir);
+    assert.equal(registry.scopes["../evil"], undefined);
+    assert.ok(registry.scopes.safe !== undefined);
+
+    const patterns = [];
+    for (let index = 0; index < 200; index += 1) patterns.push("src/f" + index + ".ts");
+    updateArchitectureScopeRules(securityRoot, indexDir, "cap", { include: patterns });
+    registry = readArchitectureRegistry(securityRoot, indexDir);
+    assert.equal(registry.scopes.cap.include.length, 128);
+  } finally {
+    rmSync(securityRoot, { recursive: true, force: true });
+  }
+});
+
+test("index wires managed filters and scheduling guards", () => {
+  const source = readFileSync(new URL("../src/index.mjs", import.meta.url), "utf8");
+  assert.match(source, /computeArchitectureBaseline\(cwd, scope, \{[\s\S]{0,500}?filterFile: architectureManagedFilter/);
+  assert.match(source, /const cachedArchitectureChange =/);
+  assert.match(source, /const MAX_SESSION_FILES = 64;/);
+  assert.match(source, /architectureCheckCache\.clear\(\);/);
 });

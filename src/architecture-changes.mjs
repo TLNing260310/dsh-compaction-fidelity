@@ -15,6 +15,7 @@ const SEMANTIC_EXTENSIONS = new Set([
 const IGNORE_DIRS = new Set(["node_modules", ".git", ".dsh", "dist", "build", "target", "coverage", ".next", ".cache"]);
 const gitRepoCache = new Map();
 const BASELINE_FILE = "architecture-baseline.json";
+const MAX_GIT_REPO_CACHE = 128;
 
 function normalizeRel(value) {
   return String(value ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
@@ -62,6 +63,11 @@ export function isGitRepository(root) {
   if (gitRepoCache.has(key)) return gitRepoCache.get(key);
   const output = gitOutput(key, ["rev-parse", "--is-inside-work-tree"]);
   const value = output !== null && output.trim() === "true";
+  gitRepoCache.set(key, value);
+  if (!gitRepoCache.has(key) && gitRepoCache.size >= MAX_GIT_REPO_CACHE) {
+    const oldest = gitRepoCache.keys().next().value;
+    if (oldest !== undefined) gitRepoCache.delete(oldest);
+  }
   gitRepoCache.set(key, value);
   return value;
 }

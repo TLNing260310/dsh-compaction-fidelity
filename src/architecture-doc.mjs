@@ -1,5 +1,5 @@
 // Folder-scoped AOCI-style architecture retrieval document.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { isSafeRelativePath, sha256, toPosix } from "./util.mjs";
 
@@ -31,7 +31,9 @@ function existingDir(root, candidate) {
     const rel = toPosix(relative(resolve(root), absolute));
     if (rel.length === 0 || rel.startsWith("..")) return null;
     if (!existsSync(absolute)) return null;
-    if (!statSync(absolute).isDirectory()) return existingDir(root, dirname(absolute));
+    const entryStat = lstatSync(absolute);
+    if (entryStat.isSymbolicLink()) return null;
+    if (!entryStat.isDirectory()) return existingDir(root, dirname(absolute));
     if (!isSafeRelativePath(rel === "." ? "." : rel)) return null;
     return { relativeDir: rel === "" ? "." : rel, absolute };
   } catch {
@@ -70,8 +72,26 @@ export function detectTaskFolders(messages, root, options = {}) {
 export function resolveArchitectureDoc(root, relativeDir = ".", docName = DEFAULT_ARCHITECTURE_DOC) {
   const scope = typeof relativeDir === "string" && relativeDir.trim().length > 0 ? relativeDir.trim() : ".";
   if (scope !== "." && !isSafeRelativePath(scope)) throw new Error(`architecture doc scope is not a safe workspace-relative path: ${scope}`);
-  const absolute = join(resolve(root), scope === "." ? "" : scope, docName);
-  return { absolute, relative: toPosix(relative(resolve(root), absolute)), scope, docName };
+  if (!/^[\w.-]+\.md$/i.test(String(docName ?? ""))) throw new Error(`architecture doc name is not safe: ${String(docName)}`);
+  const rootResolved = resolve(root);
+  const absolute = join(rootResolved, scope === "." ? "" : scope, docName);
+  let current = rootResolved;
+  for (const part of relative(rootResolved, dirname(absolute)).split(/[\\/]+/)) {
+    if (part.length === 0 || part === ".") continue;
+    current = join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) throw new Error("architecture doc path traverses a symlink: " + current);
+    } catch (error) {
+      if (error?.code === "ENOENT") break;
+      throw error;
+    }
+  }
+  try {
+    if (lstatSync(absolute).isSymbolicLink()) throw new Error("architecture doc target is a symlink: " + absolute);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return { absolute, relative: toPosix(relative(rootResolved, absolute)), scope, docName };
 }
 
 export function architectureDocExists(root, relativeDir = ".", docName = DEFAULT_ARCHITECTURE_DOC) {
@@ -154,9 +174,9 @@ function appendArchitectureUpdateRaw(text, update = {}) {
   const marker = "<!-- architecture-update-log -->";
   const at = update.at ?? new Date().toISOString();
   const scope = update.scope ?? ".";
-  const summary = String(update.summary ?? "").trim();
-  if (summary.length === 0) throw new Error("architecture update summary must not be empty");
-  const payload = { at, scope, summary, changedFiles: update.changedFiles ?? [], decisions: update.decisions ?? [], constraints: update.constraints ?? [] };
+  const summary = String(update.summary ?? "").trim().slice(0, 4000);
+  const changedFiles = (Array.isArray(update.changedFiles) ? update.changedFiles : []).map((item) => String(item)).slice(0, 200);
+  const payload = { at, scope, summary, changedFiles, decisions: Array.isArray(update.decisions) ? update.decisions.slice(0, 50) : [], constraints: Array.isArray(update.constraints) ? update.constraints.slice(0, 50) : [] };
   const block = ["<architecture_update at=\"" + attr(at) + "\" scope=\"" + attr(scope) + "\">", "```json", JSON.stringify(payload, null, 2), "```", "</architecture_update>", ""].join("\n");
   const markerIndex = text.indexOf(marker);
   const closingTag = "</architecture_retrieval>";
@@ -364,6 +384,7 @@ export function validateArchitectureDoc(text) {
   }
   return { ok: errors.length === 0, errors, jsonBlocks };
 }
+
 
 
 

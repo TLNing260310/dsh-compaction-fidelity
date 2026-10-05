@@ -35,6 +35,8 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Re-include semantics: changes made while a scope pattern is excluded are not tracked; re-include starts from a fresh baseline of the current state.
 - Explicit alignment check: `architecture check <scope>` reports aligned/stale, semantic score, detection method, attestation revision, and consistency.
 - Anchor quality: anchors are deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
+- Security hardening: scopes and glob patterns are validated, symlink escapes are rejected, and registry / reminder / calibration stores use locked compare-and-swap writes.
+- Scheduling hardening: pre-step semantic checks are throttled per workspace/scope, session caches are capped, and fingerprint files are pruned to the newest 500.
 - Persistent reminder backoff: architecture refresh reminders back off 0 -> 5 minutes -> 30 minutes, then become status-only; state lives in `.dsh/compaction-fidelity/architecture-reminders.json`.
 - Cross-lingual fidelity fingerprint: freezes exact values, CJK bigrams, and structure before compaction, compares the generated summary, emits L0-L3 levels, appends a `fidelity_compensation` block for missing exact values, and writes metrics to `.dsh/compaction-fidelity/fingerprints/`.
 - Language policy: default `auto` follows the session language (no double translation); `en` writes model prose in English but preserves verbatim user input and exact values.
@@ -166,7 +168,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 `<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
 
-- Current: `0.2.0-rc.2.plugin.1.24`
+- Current: `0.2.0-rc.2.plugin.1.25`
 - DSH prefix: exact DSH version range this plugin targets
 - Plugin body: `1.0`; increments to `1.1`, `2.0`
 - On DSH prefix change, plugin body restarts at `1.0`

@@ -33,8 +33,8 @@ import { appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArch
 import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './architecture-io.mjs';
 import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
-import { architectureReminderKey, pruneReminderState, readReminderState, recordReminder, reminderDecision, writeReminderState } from './reminder-state.mjs';
-import { createWorkspaceFileFilter, managedScopeRules, matchesScopeRules, readArchitectureRegistry, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, updateArchitectureScopeRules } from './architecture-registry.mjs';
+import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
+import { createWorkspaceFileFilter, isValidScopePattern, managedScopeRules, matchesScopeRules, readArchitectureRegistry, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, updateArchitectureScopeRules } from './architecture-registry.mjs';
 export const inject = ['commands', 'tools'];
 
 const TOOL_ID = 'dsh-compaction-fidelity#command';
@@ -130,6 +130,24 @@ export function apply(ctx, config = {}) {
     locale: getGlobalState()?.summaryLanguage ?? cfg.defaultSummaryLanguage ?? 'auto',
   };
   const recentFiles = new Map();
+  const MAX_SESSION_FILES = 64;
+  const MAX_ARCHITECTURE_CACHE = 200;
+  const MAX_ARCHITECTURE_SESSIONS = 200;
+  const ARCHITECTURE_CHECK_TTL_MS = 5000;
+  const architectureCheckCache = new Map();
+  const cachedArchitectureChange = (cwd, scope, options) => {
+    const key = String(cwd) + "|" + String(scope) + "|" + String(options?.sinceMs ?? 0);
+    const now = Date.now();
+    const hit = architectureCheckCache.get(key);
+    if (hit !== undefined && now - hit.at < ARCHITECTURE_CHECK_TTL_MS) return hit.change;
+    const change = detectSemanticChanges(cwd, scope, options);
+    architectureCheckCache.set(key, { at: now, change });
+    if (architectureCheckCache.size > MAX_ARCHITECTURE_CACHE) {
+      const oldest = architectureCheckCache.keys().next().value;
+      if (oldest !== undefined) architectureCheckCache.delete(oldest);
+    }
+    return change;
+  };
   const createArchitectureDocument = (cwd, scope) => {
     const target = resolveArchitectureDoc(cwd, scope, cfg.architectureDocName);
     const parentDir = join(target.absolute, "..");
@@ -159,6 +177,10 @@ export function apply(ctx, config = {}) {
     const session = String(agent?.session?.id ?? "session");
     const normalized = toPosix(String(scope ?? ".")).replace(/\/+$/, "") || ".";
     const registry = rememberScopeInRegistry(cwd, cfg.indexDir, normalized, { docName: cfg.architectureDocName });
+    if (!architectureScopes.has(session) && architectureScopes.size >= MAX_ARCHITECTURE_SESSIONS) {
+      const oldest = architectureScopes.keys().next().value;
+      if (oldest !== undefined) architectureScopes.delete(oldest);
+    }
     architectureScopes.set(session, new Set(Object.keys(registry.scopes)));
     return registry;
   };
@@ -187,13 +209,14 @@ export function apply(ctx, config = {}) {
   };
   const updateArchitectureBaseline = (cwd, scope) => {
     try {
+    architectureCheckCache.clear();
       const baseline = computeArchitectureBaseline(cwd, scope, {
         indexDir: cfg.indexDir,
         maxFiles: cfg.maxFiles,
         maxFileBytes: cfg.maxFileBytes,
         docName: cfg.architectureDocName,
-      });
         filterFile: architectureManagedFilter(cwd, scope) ?? undefined,
+      });
       writeArchitectureBaseline(cwd, scope, baseline, cfg.indexDir);
     } catch (error) {
       ctx.logger?.warn?.("compaction-fidelity architecture baseline failed: " + (error instanceof Error ? error.message : String(error)));
@@ -368,6 +391,7 @@ export function apply(ctx, config = {}) {
           return { text: rules === null ? "scope not managed: " + scope : "scope=" + scope + "; include=" + JSON.stringify(rules.include ?? []) + "; exclude=" + JSON.stringify(rules.exclude ?? []) };
         }
         if (action === "include" || action === "exclude" || action === "unmanage") {
+          if ((action === "include" || action === "exclude") && patterns.some((pattern) => !isValidScopePattern(pattern))) return { text: "invalid scope pattern" };
           if (action !== "unmanage" && patterns.length === 0) return { text: "action=" + action + " requires pattern." };
           let rules = null;
           if (action === "unmanage" && patterns.length === 0) {
@@ -542,6 +566,7 @@ export function apply(ctx, config = {}) {
               return { kind: 'success', text: rules === null ? 'scope 未受管：' + scope : 'scope=' + scope + '；include=' + JSON.stringify(rules.include ?? []) + '；exclude=' + JSON.stringify(rules.exclude ?? []) };
             }
             if (action === 'include' || action === 'exclude' || action === 'unmanage') {
+              if ((action === 'include' || action === 'exclude') && patterns.some((pattern) => !isValidScopePattern(pattern))) return { kind: 'error', text: '无效的 scope pattern。' };
               if (action !== 'unmanage' && patterns.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity architecture ' + action + ' <scope> <pattern>' };
               let rules = null;
               if (action === 'unmanage' && patterns.length === 0) {
@@ -701,6 +726,10 @@ export function apply(ctx, config = {}) {
       if (rel === null) return;
       const key = sessionIdOf(exec.agent);
       const set = recentFiles.get(key) ?? new Set();
+      if (!set.has(rel) && set.size >= MAX_SESSION_FILES) {
+        const oldest = set.values().next().value;
+        if (oldest !== undefined) set.delete(oldest);
+      }
       set.add(rel);
       recentFiles.set(key, set);
     });
@@ -767,6 +796,10 @@ export function apply(ctx, config = {}) {
                   const oldest = architectureAsked.values().next().value;
                   if (oldest !== undefined) architectureAsked.delete(oldest);
                 }
+                if (!architecturePending.has(askedSession) && architecturePending.size >= MAX_ARCHITECTURE_SESSIONS) {
+                  const oldest = architecturePending.keys().next().value;
+                  if (oldest !== undefined) architecturePending.delete(oldest);
+                }
                 architecturePending.set(askedSession, detection.ambiguous
                   ? { kind: "choose", candidates: choice, key }
                   : { kind: "create", scope: detection.primary.relativeDir, key });
@@ -787,16 +820,21 @@ export function apply(ctx, config = {}) {
               } catch {
                 continue;
               }
-              const change = detectSemanticChanges(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
+              const change = cachedArchitectureChange(askedCwd, scope, { indexDir: cfg.indexDir, docName: cfg.architectureDocName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
               if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
               const now = Date.now();
               const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);
-              const reminderStore = readReminderState(askedCwd, cfg.indexDir);
-              const reminder = reminderDecision(reminderStore.entries[reminderKey], now);
-              if (reminder.action !== "inject") continue;
-              reminderStore.entries[reminderKey] = recordReminder(reminderStore.entries[reminderKey], now);
-              pruneReminderState(reminderStore, now);
-              writeReminderState(askedCwd, cfg.indexDir, reminderStore);
+              let reminder = null;
+              mutateReminderState(askedCwd, cfg.indexDir, (store) => {
+                const entry = store.entries[reminderKey];
+                const decisionForEntry = reminderDecision(entry, now);
+                reminder = decisionForEntry;
+                if (decisionForEntry.action !== "inject") return null;
+                store.entries[reminderKey] = recordReminder(entry, now);
+                pruneReminderState(store, now);
+                return store;
+              });
+              if (reminder === null || reminder.action !== "inject") continue;
               const stageText = reminder.stage > 1 ? "，提醒阶段=" + reminder.stage : "";
               const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，语义变化分=" + change.score + "，检测方式=" + change.method + (change.forced ? "，单文件大变更强制触发" : "") + "，阈值=" + cfg.architectureRefreshThreshold + stageText + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
               const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
@@ -850,6 +888,7 @@ export function apply(ctx, config = {}) {
 }
 
 export default { name, inject, apply };
+
 
 
 

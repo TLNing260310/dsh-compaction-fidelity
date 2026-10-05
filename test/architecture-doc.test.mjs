@@ -1,9 +1,9 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, readArchitectureAttestation, renderArchitectureDoc, validateArchitectureDoc, verifyArchitectureDoc } from "../src/architecture-doc.mjs";
+import { appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, readArchitectureAttestation, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc, verifyArchitectureDoc } from "../src/architecture-doc.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-"));
 mkdirSync(join(root, "src", "feature"), { recursive: true });
@@ -112,4 +112,24 @@ test("legacy document without attestation gets one on first update", () => {
   assert.equal(attestation.entryCount, 1);
   const verification = verifyArchitectureDoc(upgraded);
   assert.equal(verification.ok, true, JSON.stringify(verification.errors));
+});
+
+test("symlinked scope paths are rejected", (t) => {
+  const outside = mkdtempSync(join(tmpdir(), "compaction-fidelity-outside-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "compaction-fidelity-symlink-"));
+  const link = join(sandbox, "link");
+  try {
+    symlinkSync(outside, link, "dir");
+  } catch {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
+    t.skip("symlink creation is not permitted on this platform");
+    return;
+  }
+  try {
+    assert.throws(() => resolveArchitectureDoc(sandbox, "link"));
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });

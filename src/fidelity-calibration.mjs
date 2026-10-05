@@ -1,7 +1,7 @@
 // Per-language A/B calibration for the compaction fidelity fingerprint.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWriteArchitectureFile } from "./architecture-io.mjs";
+import { assertWorkspaceContained, atomicWriteArchitectureFile, mutateArchitectureDocument } from "./architecture-io.mjs";
 
 const MAX_SAMPLES = 500;
 const MIN_SAMPLES = 8;
@@ -17,16 +17,35 @@ function filePath(cwd, indexDir) {
   return join(cwd, indexDir, "fidelity-calibration.json");
 }
 
-export function readFidelityCalibration(cwd, indexDir = ".dsh/compaction-fidelity") {
+function parseCalibrationText(text) {
   try {
-    const parsed = JSON.parse(readFileSync(filePath(cwd, indexDir), "utf8"));
+    const parsed = JSON.parse(text);
     if (parsed !== null && typeof parsed === "object" && Array.isArray(parsed.samples)) return parsed;
   } catch {
-    // missing or invalid calibration data starts from empty
+    // invalid calibration data starts from empty
   }
   return { version: 1, samples: [] };
 }
 
+export function readFidelityCalibration(cwd, indexDir = ".dsh/compaction-fidelity") {
+  try {
+    return parseCalibrationText(readFileSync(filePath(cwd, indexDir), "utf8"));
+  } catch {
+    return { version: 1, samples: [] };
+  }
+}
+
+export function mutateFidelityCalibration(cwd, indexDir, mutator) {
+  let next = null;
+  const result = mutateArchitectureDocument(filePath(cwd, indexDir), (text) => {
+    const store = text === null || text.trim().length === 0 ? { version: 1, samples: [] } : parseCalibrationText(text);
+    const value = mutator(store);
+    if (value === null || value === undefined) return null;
+    next = value;
+    return JSON.stringify(value, null, 2);
+  });
+  return { changed: result.changed, store: next ?? readFidelityCalibration(cwd, indexDir) };
+}
 export function writeFidelityCalibration(cwd, indexDir, store) {
   atomicWriteArchitectureFile(filePath(cwd, indexDir), JSON.stringify(store, null, 2));
 }
@@ -108,10 +127,12 @@ export function buildFidelitySample({ language, rawComparison, finalComparison, 
 }
 
 export function recordFidelitySample(cwd, indexDir, sample) {
-  const store = readFidelityCalibration(cwd, indexDir);
-  store.samples.push(sample);
-  if (store.samples.length > MAX_SAMPLES) store.samples = store.samples.slice(store.samples.length - MAX_SAMPLES);
-  writeFidelityCalibration(cwd, indexDir, store);
-  return store;
+  return mutateFidelityCalibration(cwd, indexDir, (store) => {
+    if (!Array.isArray(store.samples)) store.samples = [];
+    store.samples.push(sample);
+    if (store.samples.length > MAX_SAMPLES) store.samples = store.samples.slice(store.samples.length - MAX_SAMPLES);
+    return store;
+  }).store;
 }
+
 

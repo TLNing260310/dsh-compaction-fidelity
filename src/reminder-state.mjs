@@ -1,7 +1,7 @@
 // Persistent reminder backoff for architecture refresh notifications.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWriteArchitectureFile } from "./architecture-io.mjs";
+import { assertWorkspaceContained, atomicWriteArchitectureFile, mutateArchitectureDocument } from "./architecture-io.mjs";
 
 export const REMINDER_FILE = "architecture-reminders.json";
 const SECOND_DELAY_MS = 5 * 60 * 1000;
@@ -13,6 +13,16 @@ function filePath(cwd, indexDir) {
   return join(cwd, indexDir, REMINDER_FILE);
 }
 
+function parseReminderState(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed !== null && typeof parsed === "object" && parsed.entries !== null && typeof parsed.entries === "object") return parsed;
+  } catch {
+    // invalid state falls back to empty
+  }
+  return { version: 1, entries: {} };
+}
+
 export function architectureReminderKey(cwd, scope, mtimeMs) {
   const workspace = String(cwd ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
   const normalizedScope = String(scope ?? ".").replace(/\\/g, "/").replace(/^\.\//, "") || ".";
@@ -22,16 +32,34 @@ export function architectureReminderKey(cwd, scope, mtimeMs) {
 
 export function readReminderState(cwd, indexDir) {
   try {
-    const parsed = JSON.parse(readFileSync(filePath(cwd, indexDir), "utf8"));
-    if (parsed !== null && typeof parsed === "object" && parsed.entries !== null && typeof parsed.entries === "object") return parsed;
+    const file = filePath(cwd, indexDir);
+    if (!existsSync(file)) return { version: 1, entries: {} };
+    return parseReminderState(readFileSync(file, "utf8"));
   } catch {
-    // missing or invalid state falls back to empty
+    return { version: 1, entries: {} };
   }
-  return { version: 1, entries: {} };
 }
 
 export function writeReminderState(cwd, indexDir, state) {
-  atomicWriteArchitectureFile(filePath(cwd, indexDir), JSON.stringify(state, null, 2));
+  const file = filePath(cwd, indexDir);
+  assertWorkspaceContained(cwd, file);
+  atomicWriteArchitectureFile(file, JSON.stringify(state, null, 2));
+}
+
+export function mutateReminderState(cwd, indexDir, mutator) {
+  const file = filePath(cwd, indexDir);
+  assertWorkspaceContained(cwd, file);
+  let nextState = null;
+  const result = mutateArchitectureDocument(file, (text) => {
+    const state = text === null || text.trim().length === 0
+      ? { version: 1, entries: {} }
+      : parseReminderState(text);
+    const next = mutator(state);
+    if (next === null || next === undefined) return null;
+    nextState = next;
+    return JSON.stringify(next, null, 2);
+  });
+  return { changed: result.changed, state: nextState ?? readReminderState(cwd, indexDir) };
 }
 
 export function reminderDecision(entry, now = Date.now(), options = {}) {

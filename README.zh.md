@@ -32,6 +32,8 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - **排除/恢复语义**：文件被 exclude 期间发生的变化不追踪；re-include 会以当前状态重建 baseline，不会立即误报。
 - **显式对齐检查**：architecture check 直接报告 aligned/stale、语义变化分、检测方式、attestation revision 与一致性。
 - **跨语言保真指纹**：压缩前冻结精确值、CJK 二元语义单元与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
+- **安全加固**：scope / glob 校验、symlink 逃逸拒绝；registry、reminder、calibration 统一使用带锁 CAS 写入。
+- **调度加固**：pre-step 语义检查按 workspace/scope 节流；会话缓存有上限；fingerprint 文件只保留最新 500 份。
 - **语言策略**：默认 `auto` 跟随会话语言，避免翻译两次；`en` 模式英文写摘要，但用户原话与精确值原样保留、不翻译。
 - **A/B 指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言组分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每条样本包含 `dominantLanguage`、`mixedRatio`、`cjkRatio`、`latinRatio`。中英混合会话进入 `mixed:<主语言>` 组。每个语言组累计 8 个样本后给出校准分级，门控仍使用原始确定性分级。
 - **锚点质量**：锚点按 canonical identity 去重，按关系强度评分，并按类别限流（测试 2、文档 1、数据库 2）。
@@ -322,7 +324,7 @@ TESTBOX
 ```
 
 - DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
-- 当前版本：0.2.0-rc.2.plugin.1.24。
+- 当前版本：0.2.0-rc.2.plugin.1.25。
 - 插件本体为 1.0；功能迭代递增为 1.1、2.0。
 
 - DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。

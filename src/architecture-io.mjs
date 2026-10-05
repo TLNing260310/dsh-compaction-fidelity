@@ -1,13 +1,28 @@
 // Atomic, locked, compare-and-swap writes for folder-scoped architecture documents.
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5000;
 const DEFAULT_LOCK_STALE_MS = 30000;
 
 export function architectureHash(text) {
   return createHash("sha256").update(String(text ?? ""), "utf8").digest("hex");
+}
+export function assertWorkspaceContained(root, target) {
+  const rootReal = realpathSync(resolve(root));
+  let current = dirname(resolve(target));
+  for (;;) {
+    if (existsSync(current)) {
+      const real = realpathSync(current);
+      const rel = relative(rootReal, real);
+      if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("architecture target escapes workspace: " + target);
+      return;
+    }
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
 }
 
 function sleepMs(ms) {
@@ -21,13 +36,20 @@ function acquireLock(lockFile, options = {}) {
   const started = Date.now();
   for (;;) {
     try {
+      const token = `${process.pid}-${Date.now()}-${randomUUID()}`;
       const fd = openSync(lockFile, "wx");
       try {
-        writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+        writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token }));
       } finally {
         closeSync(fd);
       }
       return () => {
+        try {
+          const parsed = JSON.parse(readFileSync(lockFile, "utf8"));
+          if (parsed?.token !== token) return;
+        } catch {
+          return;
+        }
         try {
           unlinkSync(lockFile);
         } catch {
@@ -79,6 +101,7 @@ export function atomicWriteArchitectureFile(file, text) {
 
 export function mutateArchitectureDocument(file, mutate, options = {}) {
   const maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 3;
+  mkdirSync(dirname(file), { recursive: true });
   const lockFile = file + ".lock";
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const before = existsSync(file) ? readFileSync(file, "utf8") : null;

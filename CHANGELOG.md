@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.25
+
+Security and runtime-scheduling audit hardening.
+
+- Rejected unsafe architecture scopes and invalid glob patterns; glob pattern count/length is capped.
+- Rejected symlink traversal for architecture documents and managed stores; write targets must remain inside the workspace.
+- Added locked CAS writes for managed registry, reminder state, and calibration samples.
+- Hardened lock release with per-acquisition tokens and created parent directories for locked stores.
+- Throttled pre-step semantic change detection per workspace/scope and capped session/cache maps.
+- Capped model-info/calibration caches, git repo cache, recent-file sets, and pruned fingerprint files to the newest 500.
+- Added an index wiring regression test and a containment/escape audit test.
+
 ## 0.2.0-rc.2.plugin.1.24
 
 Boundary hardening, calibration cold-start guidance, and explicit alignment checks.

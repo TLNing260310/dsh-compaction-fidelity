@@ -6,7 +6,7 @@ import z from '@deepseek-ai/schemastery';
 import { join } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { anchorsForFile, briefForRoot, loadIndex, updateAnchorsForFiles } from './project-index.mjs';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { buildCompensation, buildFingerprint, compareFingerprints } from './fingerprint.mjs';
 import { compareConstraintLedger, extractConstraintLedger } from './constraint-ledger.mjs';
 import { buildFidelitySample, calibrateFidelityLevel, recordFidelitySample } from './fidelity-calibration.mjs';
@@ -19,6 +19,9 @@ import { clampText, isSafeRelativePath } from './util.mjs';
 
 const SUMMARY_LANGUAGES = new Set(['auto', 'zh', 'en', 'bilingual']);
 
+const MAX_MODEL_INFO_CACHE = 128;
+const MAX_CALIBRATION_CACHE = 256;
+const MAX_FINGERPRINT_FILES = 500;
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -235,6 +238,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     if (hit !== undefined && Date.now() - hit.at < 60000) return hit.info;
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal);
     this.modelInfoCache.set(key, { at: Date.now(), info });
+    if (!this.modelInfoCache.has(key) && this.modelInfoCache.size >= MAX_MODEL_INFO_CACHE) {
+      const oldest = this.modelInfoCache.keys().next().value;
+      if (oldest !== undefined) this.modelInfoCache.delete(oldest);
+    }
+    this.modelInfoCache.set(key, { at: Date.now(), info });
     return info;
   }
 
@@ -332,6 +340,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
           this.fidelityConfig.calibrationMaxRatio,
         );
         this.calibrationCache.set(cacheKey, ratio);
+        if (!this.calibrationCache.has(cacheKey) && this.calibrationCache.size >= MAX_CALIBRATION_CACHE) {
+          const oldest = this.calibrationCache.keys().next().value;
+          if (oldest !== undefined) this.calibrationCache.delete(oldest);
+        }
+        this.calibrationCache.set(cacheKey, ratio);
       }
       if (!(ratio > 1.05)) return measurement;
       const calibratedTotal = Math.round(measurement.baseline.tokens + measurement.surfaceDeltaTokens * ratio);
@@ -412,6 +425,19 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       };
       await writeFile(join(dir, `${sessionId}-${Date.now()}.json`), JSON.stringify(record, null, 2), 'utf8');
     } catch (error) {
+      try {
+        const names = readdirSync(dir).filter((name) => name.endsWith(".json"));
+        if (names.length > MAX_FINGERPRINT_FILES) {
+          const files = names.map((name) => {
+            try { return { name, mtimeMs: statSync(join(dir, name)).mtimeMs }; } catch { return null; }
+          }).filter(Boolean).sort((left, right) => left.mtimeMs - right.mtimeMs);
+          for (const file of files.slice(0, files.length - MAX_FINGERPRINT_FILES)) {
+            try { unlinkSync(join(dir, file.name)); } catch { /* best effort */ }
+          }
+        }
+      } catch {
+        // pruning is best effort
+      }
       this.ctx.logger?.warn?.(`dsh-compaction-fidelity fingerprint persist failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
