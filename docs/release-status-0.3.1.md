@@ -9,8 +9,9 @@ This document is the public, committed release-status record for `0.3.1`. It is 
 
 ## Distribution status
 
-- GitHub tag and release `v0.3.1` are published from this revision.
-- The npm publication target is `dsh-compaction-fidelity@0.3.1`.
+- GitHub tag and release `v0.3.1` are published at commit `e058e35`; later documentation commits on `main` do not move the tag.
+- The npm publication target is `dsh-compaction-fidelity@0.3.1`; the package dry-run succeeds, but actual publication still requires npm credentials.
+- A one-file list submission is open at `awesome-dsh-plugin/awesome-dsh-plugin#6732`; review is pending. List inclusion is not the same as Desktop built-in marketplace one-click installation.
 - DSH Desktop community-market one-click installation requires npm `latest` to resolve to `0.3.1`; the npm publication and marketplace path are not verified until the package is actually published.
 - Real three-backend paired evaluation remains pending.
 
