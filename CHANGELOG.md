@@ -29,6 +29,7 @@ Hardening release on top of the published 0.3.0 tag. The `v0.3.0` tag remains un
 ### Verification
 
 - `npm run check` passes; full suite is 104 tests, 103 pass, 1 environment-dependent skip, with optional DSH-peer integration tests covering the real hook, refresh, injection, scheduling, budget, and installer regressions.
+- Local tarball smoke in a temporary `DSH_HOME`: a custom profile created from the shipped web template installed `dsh-compaction-fidelity-0.3.1.tgz`, and `dsh --profile smoke --dump-config` exited 0 with the `compaction-fidelity` engine row present. Desktop preset replacement remains verified only through the app-closed Desktop profile path.
 - npm publication and real three-backend paired evaluation remain pending and are not claimed.
 
 - Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.

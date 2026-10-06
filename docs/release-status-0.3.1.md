@@ -32,7 +32,8 @@ This document is the public, committed release-status record for `0.3.1`. It is 
 
 - `npm run check` passes.
 - Full test suite: 104 tests, 103 pass, 1 environment-dependent skip. Optional DSH-peer integration tests pass when the Desktop Harness peers are linked, including real pre-step hook behavior, queued-index cancellation on disposal, same-snapshot architecture refresh, managed-exclusion injection, anchor injection, pinned-budget accounting, and isolated installer overlap/rollback/filter cases.
-- The isolated Profile smoke recorded for `0.3.0` remains valid for installation mechanics; it used the local tarball and the Desktop Harness kernel with a mock LLM, and did not execute a real-model compression.
+- `npm run verify:local` passed with the Desktop Harness kernel and a mock LLM; it did not execute a real-model compression.
+- Local tarball smoke: in a temporary `DSH_HOME`, a custom profile created from the shipped web template installed `dsh-compaction-fidelity-0.3.1.tgz` through `dsh plugin --profile smoke add`, and `dsh --profile smoke --dump-config` exited 0 with the `compaction-fidelity` engine row present. Because that web-derived profile does not contain the Desktop preset ids, the bundle patch reported `preset-standard`, `preset-cordis`, `preset-ptc`, and `preset-minimal` not found; Desktop preset replacement still requires the Desktop app/profile path and an app-closed upgrade.
 
 ## Not claimed
 
