@@ -505,6 +505,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
             for (const anchor of anchors) lines.push(`  - [${anchor.kind}${Number.isFinite(anchor.quality) ? ` q${anchor.quality}` : ''}] ${anchor.path} — ${anchor.reason}`);
           }
           anchorText = lines.join('\n');
+        } else if (existsSync(join(cwd, runtime.indexDir, 'index.json'))) {
+          // The cache is present but was written under a different read policy,
+          // so it is discarded instead of served. The next pre-step rebuilds it;
+          // report that instead of silently dropping the summary context.
+          this.ctx.logger?.warn?.('compaction-fidelity: the cached project index was built under a different read policy and is not being served; the next pre-step rebuilds it');
         }
         if (referencedFiles.length > 0) {
           updateAnchorsForFiles(cwd, runtime.indexDir, referencedFiles.slice(0, 24), { anchorsPerFile: this.fidelityConfig.anchorsPerFile, expectedFingerprint: policy.fingerprint });

@@ -22,7 +22,7 @@ const FIXED_DISTRACTORS = ["No additional constraint applies.", "Use default beh
 const RETRACT_RE = /(?:不再需要|不再要求|不再|不用再|不需要|无需|无须|取消|撤销|撤回|作废|失效|忽略|忘掉|忘记|别管|作罢|算了|改为|改成|换成|现在可以|允许|no longer|not needed anymore|never mind|forget about|forget|disregard|ignore|scratch that|instead|switch to|change to|now allowed|revoke|repeal)/gi;
 
 /** Generic words removed from a withdrawal so its named target can be matched. */
-const RETRACT_NOISE_CJK_RE = /(?:所有|全部|一切|以上|上面|前面|之前|此前|刚才|刚刚|的|约束|要求|限制|规则|指令|条件|条款)/g;
+const RETRACT_NOISE_CJK_RE = /(?:所有|全部|一切|以上|上面|前面|之前|此前|刚才|刚刚|的|这|那|该|此|条|项|个|约束|要求|限制|规则|指令|条件|条款)/g;
 const RETRACT_NOISE_ASCII_RE = /\b(?:all|every|any|previous|prior|earlier|above|other|the|constraints?|requirements?|restrictions?|rules?|instructions?)\b/gi;
 
 /** A withdrawal that names no specific rule applies to every earlier rule. */
@@ -62,7 +62,11 @@ function clampText(text, maxChars) {
 }
 
 function splitSegments(text) {
-  return String(text ?? "").split(/[\n。；;！？!?]+/).map((part) => part.trim()).filter((part) => part.length > 0);
+  // Keep the sentence terminator so a trailing question mark is still visible to
+  // the instruction gate; the terminator is stripped again during tokenization.
+  return (String(text ?? "").match(/[^\n。；;！？!?]+[。；;！？!?]*/g) ?? [])
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 }
 
 /** Best-effort provenance for a message, when the host provides a timestamp. */
@@ -130,11 +134,19 @@ function retractionCovers(retraction, candidate) {
   return shared / retraction.object.size >= REVOKE_TARGET_COVERAGE;
 }
 
+// A withdrawal often names its target and then says what to keep. The trailing
+// clause must not be folded into the target, or it dilutes the coverage ratio
+// and the withdrawal is silently ignored.
+const KEEP_CLAUSE_RE = /^\s*(?:其他|其余|其它|剩下|别的|其他规则|其他都|其余都|other|the rest|everything else|keep)/i;
+
 function withdrawalTarget(text) {
-  return String(text ?? "")
+  const value = String(text ?? "")
     .replace(RETRACT_RE, " ")
     .replace(RETRACT_NOISE_CJK_RE, " ")
     .replace(RETRACT_NOISE_ASCII_RE, " ");
+  const cut = value.search(/[，,]/);
+  if (cut !== -1 && KEEP_CLAUSE_RE.test(value.slice(cut + 1))) return value.slice(0, cut);
+  return value;
 }
 
 function describeRetired(candidate, extra) {
@@ -148,12 +160,38 @@ function describeRetired(candidate, extra) {
   };
 }
 
+const QUESTION_TAIL_RE = /[?？][\s"\)\]]*$/;
+const IMPERATIVE_HEAD_RE = /^\s*(?:不要|不能|不可|不许|不允许|禁止|严禁|切勿|避免|记住|必须|一定要|务必|只能|仅在|只在|never|must not|must|do not|avoid|only|always|ensure|remember)/i;
+const REPORTED_MODAL_RE = /(?:不要|不能|不可|不许|不允许|禁止|严禁|切勿|避免|记住|必须|一定要|务必|只能|never|must|do not|avoid|always|only)/i;
+const REPORT_FRAME_RE = /(?:用户(?:之前|曾经|以前)?|文档(?:里|中)?|上游|注释|README|说明文档|别人|他|她|他们|甲方|客户)[^。；;！？!?]{0,12}(?:说|写着|写道|提到|声称|要求|asked|said|says|mentioned|claims)/i;
+
+/**
+ * Decide whether a trigger-matched sentence is actually an instruction from the
+ * user. Two shapes match the trigger regexes but are not constraints:
+ * - a question about a rule, which must never be re-pinned as non-negotiable;
+ *   a sentence that opens with the imperative itself still counts.
+ * - third-party speech quoted before the rule, which is hearsay rather than a
+ *   rule the user set.
+ */
+function isInstruction(text) {
+  const value = String(text ?? "").trim();
+  if (value.length === 0) return false;
+  if (QUESTION_TAIL_RE.test(value) && !IMPERATIVE_HEAD_RE.test(value)) return false;
+  const frame = REPORT_FRAME_RE.exec(value);
+  if (frame !== null) {
+    const modalIndex = value.search(REPORTED_MODAL_RE);
+    if (modalIndex === -1 || frame.index < modalIndex) return false;
+  }
+  return true;
+}
+
 /**
  * Collect the constraints that are still in force, newest first, together with
  * the provenance of each rule and a diagnostic list of rules that were dropped
  * because the user withdrew or replaced them.
  */
 export function extractConstraintLedger(messages, options = {}) {
+
   const maxConstraints = Number.isInteger(options.maxConstraints) && options.maxConstraints > 0 ? options.maxConstraints : 32;
   const list = Array.isArray(messages) ? messages : [];
 
@@ -179,6 +217,10 @@ export function extractConstraintLedger(messages, options = {}) {
       const hard = HARD_RE.test(segment);
       const soft = SOFT_RE.test(segment);
       if (!hard && !soft) continue;
+      // The trigger regexes also fire on questions and on speech quoted from a
+      // third party. Re-pinning either as a non-negotiable constraint would
+      // invent a rule the user never set, so both are rejected here.
+      if (!isInstruction(segment)) continue;
       candidates.push({
         ordinal,
         messageIndex,

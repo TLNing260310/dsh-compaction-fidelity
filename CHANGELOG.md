@@ -35,10 +35,29 @@ Post-audit hardening on top of 0.3.1. This section implies no version bump, tag,
 - Raw model output and the delivered summary are evaluated separately, and constraints are re-evaluated after compensation, instead of pairing a raw fingerprint with post-compensation constraints.
 - Cancellation is no longer treated as a fallback condition: an aborted pressure compaction rethrows instead of continuing into official compaction.
 
+### Constraint parsing review
+
+The constraint parser is heuristic, so the shapes a bare trigger regex gets wrong were measured
+rather than assumed, and are now covered by characterisation tests in
+`test/constraint-ledger-heuristics.test.mjs`.
+
+- A question about a rule is no longer pinned: 为什么不要使用 tabs？ is skipped, while a sentence that opens with the imperative itself (不要使用 tabs 可以吗？) is still collected.
+- Speech quoted from a third party is no longer pinned as a rule: 用户之前说不要使用 tabs and 文档里写着必须用 pnpm are treated as hearsay. A rule stated directly is unaffected.
+- A withdrawal that also says what to keep now retires its own target: 不再需要 tabs 这条，其他都保留 was previously ignored because the trailing clause diluted the coverage ratio. The unrelated rule is left alone, which the test asserts explicitly.
+- Demonstrative fillers (这/那/该/此/条/项/个) are stripped from a withdrawal target so the ratio measures the object, not the phrasing.
+- Sentence terminators are preserved through segmentation, so a trailing question mark is still visible to the gate.
+- Two shapes stay documented gaps rather than fixes: a pure conditional (如果…就…) is dropped instead of pinned, and a withdrawal naming two objects in one clause (不再需要 docker 和 tabs) retires neither.
+
 ### Verification in this round
 
-- `npm run check` passes. The full suite is 132 tests: 127 pass, 0 fail, 5 environment-dependent skips (the DSH peer modules are not installed in this checkout).
-- Still open from the audit, and not claimed as fixed: Git-backed change detection still compares against `HEAD` rather than the refresh snapshot and has no explicit `unknown` state; index scanning is still synchronous with incomplete time and directory budgets; `install-desktop.mjs` rollback still covers only the pre-Profile half; configuration is still process-global; calibration import still lacks a field whitelist.
+
+- `npm run check` passes. The full suite is 144 tests: 139 pass, 0 fail, 5 environment-dependent skips in a checkout with no peer modules.
+- The same suite run against the installed Desktop Harness reports 144 tests: 143 pass, 0 fail, 1 skip.
+- The previously always-skipped host tests now run against `@deepseek-ai/dsh@0.2.0-rc.2` and `@deepseek-ai/cordis@4.0.4` linked read-only from the installed Desktop payload into a throwaway copy of the tree, with `DSH_HOME` pointed at a temporary directory. The live profile and the installed payload were not modified.
+- That run found a real defect: the engine integration fixture built its cached index without the read policy, so the new policy check correctly refused it. The fixture now builds the index the way the plugin does, and the engine logs when it declines to serve a cache written under a different policy instead of dropping the summary context silently.
+
+- Still open from the audit, and not claimed as fixed: Git-backed change detection still compares against `HEAD` rather than the refresh snapshot and has no explicit `unknown` state; index scanning is still synchronous with incomplete time and directory budgets; `install-desktop.mjs` rollback still covers only the pre-Profile half; configuration is still process-global; calibration import still lacks a field whitelist; and two constraint-parser shapes remain measured gaps (a pure conditional is dropped, and a withdrawal naming two objects in one clause retires neither).
+
 - No real-model paired evaluation, Desktop end-to-end upgrade, npm publication, or "leading among peers" claim is made here.
 
 ## 0.3.1

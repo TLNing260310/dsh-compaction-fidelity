@@ -162,10 +162,11 @@ test('architecture refresh uses one fresh snapshot for the document and baseline
 });
 
 test('engine applies managed exclusions, runtime anchors, and the full pinned budget', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
-  const [{ CompactionFidelityEngine }, { Context }, { buildIndex }] = await Promise.all([
+  const [{ CompactionFidelityEngine }, { Context }, { buildIndex }, { retrievalPolicyFor }] = await Promise.all([
     import('../src/engine.mjs'),
     import('@deepseek-ai/cordis'),
     import('../src/project-index.mjs'),
+    import('../src/architecture-registry.mjs'),
   ]);
   const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-engine-hooks-'));
   try {
@@ -178,7 +179,14 @@ test('engine applies managed exclusions, runtime anchors, and the full pinned bu
       version: 2,
       scopes: { module: { doc: 'ARCHITECTURE.md', include: [], exclude: ['ARCHITECTURE.md'] } },
     }), 'utf8');
-    buildIndex(root, { indexDir: '.dsh/compaction-fidelity' });
+    // Build the fixture index the way the plugin does: stamped with the current
+    // read policy, so a policy-rejected cache cannot pass as plugin-produced.
+    const fixturePolicy = retrievalPolicyFor(root, '.dsh/compaction-fidelity');
+    buildIndex(root, {
+      indexDir: '.dsh/compaction-fidelity',
+      filterFile: fixturePolicy.filterFile,
+      scopeFingerprint: fixturePolicy.fingerprint,
+    });
     const agent = {
       session: {
         id: 'engine-hook-session',
