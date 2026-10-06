@@ -94,6 +94,7 @@
               summaryLanguage: auto
               summaryMaxTokens: 65536
               compensationMaxTokens: 2048
+              injectionMaxTokens: 16000
               compactionRetries: 1
               headroomTokens: 65536
               ledger: true
@@ -249,6 +250,7 @@
               summaryLanguage: auto
               summaryMaxTokens: 65536
               compensationMaxTokens: 2048
+              injectionMaxTokens: 16000
               compactionRetries: 1
               headroomTokens: 65536
               ledger: true
@@ -414,6 +416,7 @@
               summaryLanguage: auto
               summaryMaxTokens: 65536
               compensationMaxTokens: 2048
+              injectionMaxTokens: 16000
               compactionRetries: 1
               headroomTokens: 65536
               ledger: true
@@ -579,6 +582,7 @@
               summaryLanguage: auto
               summaryMaxTokens: 65536
               compensationMaxTokens: 2048
+              injectionMaxTokens: 16000
               compactionRetries: 1
               headroomTokens: 65536
               ledger: true

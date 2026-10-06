@@ -19,6 +19,7 @@ const ENGINE_ROW = {
     ['summaryLanguage', 'auto'],
     ['summaryMaxTokens', '65536'],
     ['compensationMaxTokens', '2048'],
+    ['injectionMaxTokens', '16000'],
     ['compactionRetries', '1'],
     ['headroomTokens', '65536'],
     ['ledger', 'true'],
@@ -153,7 +154,3 @@ const hostRow = [
 const output = `${header}${hostRow}\n\n${blocks.join('\n\n')}\n`;
 writeFileSync(new URL('../cordis.patch.yml', import.meta.url), output, 'utf8');
 console.log(`wrote cordis.patch.yml (${output.split('\n').length} lines)`);
-
-
-
-

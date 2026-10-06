@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Compaction-Fidelity Engine",
+    "description": "Bilingual compaction summary, deterministic fidelity checks, and compensation for missing exact values."
+  }
+}

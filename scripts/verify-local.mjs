@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,16 +25,29 @@ try {
   const { CompactionFidelityEngine } = await import("../src/engine.mjs");
   const host = await import("../src/index.mjs");
 
-  const engineCtx = new Context();
-  engineCtx.provide("llm", {
+  const llmService = {
     async resolveModelInfo() { return { context: { contextWindow: 1000000 }, defaultMaxTokens: 65536 }; },
     async *stream() { yield { type: "text-delta", index: 0, text: "ok" }; yield { type: "finish", reason: { kind: "done" } }; },
-  });
+  };
+  const engineCtx = new Context();
+  engineCtx.provide("llm", llmService);
   engineCtx.provide("tokenMeter", { measure() { return { totalTokens: 0, nodes: [] }; } });
   engineCtx.provide("sessions", {});
   const engine = new CompactionFidelityEngine(engineCtx, { threshold: "256k", anchors: false });
   assert.equal(engine.fidelityConfig.threshold, "256k");
+  assert.equal(engine.fidelityConfig.injectionMaxTokens, 16000);
   assert.equal(engine.config.thresholdRatio, 0.8);
+  for (let index = 0; index < 130; index += 1) {
+    await engine.resolveModelInfoCached({ provider: "test", model: `cache-${index}` });
+  }
+  assert.equal(engine.modelInfoCache.size, 128);
+
+  const budgetCtx = new Context();
+  budgetCtx.provide("llm", llmService);
+  budgetCtx.provide("tokenMeter", { measure() { return { totalTokens: 0, nodes: [] }; } });
+  budgetCtx.provide("sessions", {});
+  const budgetEngine = new CompactionFidelityEngine(budgetCtx, { threshold: "256k", anchors: false, injectionMaxTokens: 2048 });
+  assert.equal(budgetEngine.fidelityConfig.injectionMaxTokens, 2048);
 
   const commands = [];
   const tools = new Map();
@@ -63,6 +76,27 @@ try {
   }, agent, new AbortController().signal);
   assert.equal(summary.llmStreamCall, true);
   assert.equal(summary.summary[0].text, "ok");
+  const dashboard = await commands.find((command) => command.name === "compaction-fidelity").handler({ agent, rawInput: "calibration summary" });
+  assert.equal(dashboard.kind, "success");
+  assert.match(dashboard.text, /p25=/);
+  const fingerprintDir = join(root, ".dsh", "compaction-fidelity", "fingerprints");
+  const fingerprintText = readFileSync(join(fingerprintDir, readdirSync(fingerprintDir)[0]), "utf8");
+  assert.doesNotMatch(fingerprintText, /must use pnpm test|src\/app\.ts/);
+  const storedGate = JSON.parse(fingerprintText).gate;
+  assert.equal(typeof storedGate.failureCount, "number");
+  assert.equal(Object.hasOwn(storedGate, "failures"), false);
+  for (let index = 0; index < 501; index += 1) writeFileSync(join(fingerprintDir, `old-${index}.json`), "{}");
+  const emptyFingerprint = { language: "en", stats: {}, exact: { paths: [] }, cjkBigrams: [], headings: [], codeLanguages: [] };
+  await engine.persistFingerprint(agent, emptyFingerprint, emptyFingerprint, { level: "L0", exactMissing: {} });
+  assert.ok(readdirSync(fingerprintDir).filter((name) => name.endsWith(".json")).length <= 500);
+  const originalSummarizeFidelity = engine.summarizeFidelity;
+  engine.summarizeFidelity = async () => { throw new Error("simulated fidelity failure"); };
+  const fallbackSummary = await engine.summarize({ messages: [], tools: [] }, agent, new AbortController().signal);
+  assert.equal(fallbackSummary.summary[0].text, "ok");
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(engine.summarize({ messages: [], tools: [] }, agent, aborted.signal), /simulated fidelity failure/);
+  engine.summarizeFidelity = originalSummarizeFidelity;
 
   const calls = [];
   let pressure = { totalTokens: 900000, nodes: [1, 2, 3].map((seq) => ({ seq, tokens: 300000, heuristicTokens: 300000 })) };
@@ -96,6 +130,11 @@ try {
   const calibrated = engine.calibrateMeasurement(calibrationAgent, calibrationMeasurement);
   assert.equal(calibrated.calibration.ratio, 4);
   assert.equal(calibrated.totalTokens, 160000);
+  for (let index = 0; index < 258; index += 1) {
+    const unique = { ...calibrationAgent, session: { ...calibrationAgent.session, id: `cal-${index}`, header: { id: `cal-${index}`, cwd: root } } };
+    engine.calibrateMeasurement(unique, calibrationMeasurement);
+  }
+  assert.equal(engine.calibrationCache.size, 256);
 
   // Regression for the absolute-threshold stall: a configured threshold above
   // the model's effective budget must still fall back to the official policy once
@@ -127,5 +166,3 @@ try {
   rmSync(root, { recursive: true, force: true });
   if (createdJunction) rmSync(junction, { recursive: true, force: true });
 }
-
-

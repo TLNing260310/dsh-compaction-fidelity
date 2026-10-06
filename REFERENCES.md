@@ -10,8 +10,8 @@ Key facts must remain verifiable, compensable, and retrievable after compression
 
 ## Philosophy
 
-- The official compaction engine guarantees that a session can continue.
-- This plugin guarantees that key facts, behavioral constraints, and project architecture survive that continuation.
+- The official compaction engine provides the transaction and overflow recovery path for session continuation.
+- This plugin measures and compensates for loss of key facts and constraints, and adds project architecture retrieval; it does not guarantee downstream task correctness.
 - Exact values such as paths, commands, errors, identifiers, and numbers take priority.
 - Project architecture and database anchors must remain retrievable after compression.
 - Hard and soft constraints must survive compaction.
@@ -20,7 +20,7 @@ Key facts must remain verifiable, compensable, and retrievable after compression
 
 ## Who it is for
 
-- DSH Desktop 0.2.0-rc.2 users.
+- DSH Desktop 2.0.17 users running its bundled Harness 0.2.0-rc.2.
 - Long sessions in large or multi-module repositories.
 - Chinese, English, or bilingual workflows.
 - Tool-heavy sessions where context grows and auto-compaction is likely.
@@ -32,7 +32,7 @@ Key facts must remain verifiable, compensable, and retrievable after compression
 - AOCI-CODE: architecture coordinates and long-term retrieval docs.
   It independently implements a folder-scoped ARCHITECTURE.md with Markdown, XML-style tags, and embedded JSON, using append-only updates.
 - DeepSeek Harness compaction-basic: the official BasicCompactionEngine remains the safety net.
-  This plugin subclasses it, patches presets, and falls back to it; it does not replace the official engine.
+  This plugin subclasses it, replaces the preset's backend with that subclass, and overrides summarize(); the official compaction transaction and fallback remain in use.
 - DeepSeek Harness token-meter: a local runtime patch adds a CJK-aware estimator.
   The patch script modifies the local DSH installation and does not copy DSH source code.
 - dsh-compaction-pro: language-following summaries and high-fidelity templates.
@@ -49,6 +49,8 @@ Key facts must remain verifiable, compensable, and retrievable after compression
   This project independently implements compareConstraintLedger.
 
 ## Research and methodology references
+
+Verified version, marketplace and ecosystem links are collected in [the 2026-10-06 audit](docs/DSH-compatibility-and-market-audit-2026-10-06.md). The research names below are historical design notes, not independently reproduced performance evidence.
 
 The following works informed design decisions but no source code was copied from them.
 

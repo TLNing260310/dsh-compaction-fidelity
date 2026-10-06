@@ -35,6 +35,7 @@ import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBa
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
 import { createWorkspaceFileFilter, isValidScopePattern, managedScopeRules, matchesScopeRules, readArchitectureRegistry, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, updateArchitectureScopeRules } from './architecture-registry.mjs';
+import { importFidelityCalibration, readFidelityCalibration, summarizeFidelityCalibration } from './fidelity-calibration.mjs';
 export const inject = ['commands', 'tools'];
 
 const TOOL_ID = 'dsh-compaction-fidelity#command';
@@ -511,6 +512,24 @@ export function apply(ctx, config = {}) {
           persist({ summaryLanguage: value }, cwd);
           return { kind: 'success', text: `摘要语言已设为 ${value}。auto=跟随会话语言，en=英文记要但原样保留用户原话，bilingual=英文结构+中文补充。` };
         }
+        case 'calibration': {
+          const action = (rest[0] ?? 'summary').toLowerCase();
+          if (action === 'summary') {
+            const store = readFidelityCalibration(cwd, cfg.indexDir);
+            const groups = summarizeFidelityCalibration(store.samples);
+            return { kind: 'success', text: commandTextList([
+              `校准样本：${store.samples.length}（每组至少 8 条才显示校准分级；门控始终使用确定性 L0-L3）`,
+              ...groups.map((group) => `${group.key}: n=${group.count}, improved=${group.improved}, ${group.calibrated ? 'calibrated' : 'insufficient'}, p25=${group.thresholds.p25}, p50=${group.thresholds.p50}, p75=${group.thresholds.p75}`),
+            ]) };
+          }
+          if (action === 'import') {
+            const source = rest.slice(1).join(' ');
+            if (source.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity calibration import <工作区内相对路径.json>' };
+            const result = importFidelityCalibration(cwd, cfg.indexDir, source);
+            return { kind: 'success', text: `校准导入完成：新增=${result.added}，重复=${result.duplicates}，当前保留=${result.retained}。` };
+          }
+          return { kind: 'error', text: '用法：/compaction-fidelity calibration summary | import <工作区内相对路径.json>' };
+        }
         case 'init':
         case 'reindex': {
           const index = buildIndex(cwd, indexOptions);
@@ -685,6 +704,7 @@ export function apply(ctx, config = {}) {
       '- /compaction-fidelity threshold 256k | 350k | 512k | 800k | <K 数值>',
       '- /compaction-fidelity retain <tokens>',
       '- /compaction-fidelity language auto | zh | en | bilingual',
+      '- /compaction-fidelity calibration summary | import <workspace-relative-file.json>',
       '- /compaction-fidelity init | reindex',
       '- /compaction-fidelity verify',
       '- /compaction-fidelity brief',

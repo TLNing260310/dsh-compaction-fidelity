@@ -78,6 +78,39 @@ export function clampText(text, maxChars) {
   return `${value.slice(0, Math.max(0, maxChars - 20))}\n…[truncated]`;
 }
 
+export function estimateTextTokens(text) {
+  let cjk = 0;
+  let ascii = 0;
+  let other = 0;
+  for (const ch of String(text ?? '')) {
+    const cp = ch.codePointAt(0);
+    if ((cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff)) cjk += 1;
+    else if (cp <= 0x7f) ascii += 1;
+    else other += 1;
+  }
+  return Math.ceil(cjk * 0.8 + other * 0.5 + ascii / 4);
+}
+
+export function clampTextToTokens(text, maxTokens) {
+  const value = String(text ?? '');
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) return '';
+  if (estimateTextTokens(value) <= maxTokens) return value;
+  const marker = '\n...[truncated]';
+  let low = 0;
+  let high = value.length;
+  let best = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = value.slice(0, mid) + marker;
+    if (estimateTextTokens(candidate) <= maxTokens) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return best > 0 ? value.slice(0, best) + marker : '';
+}
 export function uniqueBy(items, keyFn) {
   const seen = new Set();
   const out = [];

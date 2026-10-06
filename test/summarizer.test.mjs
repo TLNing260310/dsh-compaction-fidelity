@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSummaryInstruction, extractFilePathsFromMessages, extractLedger } from '../src/summarizer.mjs';
+import { buildSummaryInstruction, buildSummaryInstructionWithDiagnostics, extractFilePathsFromMessages, extractLedger } from '../src/summarizer.mjs';
 
 const messages = [
   { role: 'user', content: [{ type: 'text', text: '部署时必须使用 pnpm test，不要用 npm。文件是 src/app.ts。错误 ABC_123 出现在 v1.2.3。' }] },
@@ -45,4 +45,32 @@ test('adds an AOCI-style cognition refresh trigger for architecture scopes', () 
   const text = buildSummaryInstruction({ language: 'en', ledger, brief: '', anchors: '', architectureDocs: 'DOC', cognitionRefreshScopes: ['dsh-researcher'] });
   assert.ok(text.includes('<cognition_refresh trigger="context_compaction">'));
   assert.ok(text.includes('dsh-researcher/ARCHITECTURE.md'));
+});
+
+test('enforces a global injection budget and keeps ledger and pinned constraints', () => {
+  const ledger = extractLedger(messages);
+  const result = buildSummaryInstructionWithDiagnostics({
+    language: 'zh',
+    ledger: { ...ledger, userQuotes: Array.from({ length: 40 }, (_, index) => `必须原样保留的用户原话 ${index} `.repeat(20)) },
+    brief: 'B'.repeat(3000),
+    anchors: 'A'.repeat(3000),
+    constraints: [{ text: '必须保留的约束 '.repeat(200) }],
+    architectureDocs: 'D'.repeat(8000),
+    cognitionRefreshScopes: ['dsh-researcher'],
+    maxTokens: 3000,
+  });
+  assert.equal(result.diagnostics.truncated, true);
+  assert.ok(result.diagnostics.estimatedTokens <= 3000);
+  assert.match(result.text, /<exact_value_ledger>/);
+  assert.match(result.text, /<pinned_constraints>/);
+  assert.doesNotMatch(result.text, /<cognition_refresh/);
+  assert.match(result.text, /<compaction_fidelity_injection_budget dropped="\d+" truncated="\d+" \/>/);
+  assert.ok(result.diagnostics.droppedBlocks.includes('cognition_refresh'));
+  assert.ok(result.diagnostics.droppedBlocks.includes('project_brief'));
+});
+
+test('reserves compensation tokens from the instruction budget', () => {
+  const ledger = extractLedger(messages);
+  const result = buildSummaryInstructionWithDiagnostics({ language: 'en', ledger, maxTokens: 3000, reserveTokens: 1024 });
+  assert.ok(result.diagnostics.estimatedTokens <= 3000 - 1024);
 });

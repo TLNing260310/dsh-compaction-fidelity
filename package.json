@@ -1,14 +1,31 @@
 {
   "name": "dsh-compaction-fidelity",
-  "version": "0.2.0-rc.2.plugin.1.25",
-  "description": "dsh-compaction-fidelity: cross-lingual fidelity fingerprints + project cognition anchors + dynamic compaction line for DSH.",
+  "version": "0.2.0-rc.2.plugin.1.26-dev.0",
+  "description": "Bilingual DSH compaction backend with lexical fidelity metrics, compensation, and project architecture retrieval.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TLNing260310/dsh-compaction-fidelity.git"
+  },
+  "homepage": "https://github.com/TLNing260310/dsh-compaction-fidelity#readme",
+  "bugs": "https://github.com/TLNing260310/dsh-compaction-fidelity/issues",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "compaction",
+    "context-fidelity",
+    "bilingual"
+  ],
   "type": "module",
   "icon": "./icon.svg",
   "main": "src/index.mjs",
   "exports": {
     ".": "./src/index.mjs",
+    "./icon": "./icon.svg",
     "./engine": "./src/engine.mjs",
+    "./engine/icon": "./icon.svg",
+    "./engine/locale/*.json": "./locale/engine/*.json",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
@@ -19,7 +36,8 @@
     "preset/**",
     "cordis.patch.yml",
     "icon.svg",
-    "locale/*.json",
+    "locale/**",
+    "docs/*.md",
     "licenses/**",
     "README.md",
     "README.zh.md",
@@ -48,6 +66,7 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh-agent-preset": "0.2.0-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
@@ -61,6 +80,9 @@
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    },
     "@deepseek-ai/cordis": {
       "optional": true
     },
@@ -97,9 +119,10 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/engine.mjs && node --check src/fingerprint.mjs && node --check src/summarizer.mjs && node --check src/project-index.mjs && node --check src/range.mjs && node --check src/state.mjs && node --check src/util.mjs && node --check lib/client.js && node --check src/constraint-ledger.mjs && node --check src/fidelity-gate.mjs && node --check src/architecture-doc.mjs && node --check src/architecture-io.mjs && node --check src/architecture-changes.mjs && node --check src/reminder-state.mjs && node --check src/fidelity-calibration.mjs && node --check src/architecture-registry.mjs",
+    "check": "node --check src/index.mjs && node --check src/engine.mjs && node --check src/fingerprint.mjs && node --check src/fingerprint-privacy.mjs && node --check src/summarizer.mjs && node --check src/project-index.mjs && node --check src/range.mjs && node --check src/state.mjs && node --check src/util.mjs && node --check lib/client.js && node --check src/constraint-ledger.mjs && node --check src/fidelity-gate.mjs && node --check src/architecture-doc.mjs && node --check src/architecture-io.mjs && node --check src/architecture-changes.mjs && node --check src/reminder-state.mjs && node --check src/fidelity-calibration.mjs && node --check src/architecture-registry.mjs && node --check scripts/migrate-fingerprint-sidecars.mjs",
     "generate-patch": "node scripts/generate-preset-patch.mjs",
     "verify:local": "node scripts/verify-local.mjs",
-    "patch:dsh": "node scripts/patch-dsh-runtime.mjs"
+    "patch:dsh": "node scripts/patch-dsh-runtime.mjs",
+    "migrate:fingerprint-privacy": "node scripts/migrate-fingerprint-sidecars.mjs"
   }
 }

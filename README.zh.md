@@ -2,7 +2,7 @@
 
 > 项目名与包名：`dsh-compaction-fidelity`；定位：DSH 上下文压缩保真层。
 
-面向 **DeepSeek Harness 0.2.0-rc.2** 的 Profile Bundle：跨语言压缩保真（fingerprint）+ Compaction-Fidelity 项目认知/架构级回查锚点 + 动态压缩线。
+面向社区版 **DSH Desktop 2.0.17** 所内嵌 **DeepSeek Harness 0.2.0-rc.2** 运行时的 Profile Bundle：双语压缩引擎 + 跨语言保真指纹与补偿 + 项目架构回查锚点 + 动态压缩线。版本、市场与分发核对见 [2026-10-06 兼容性及市场审计](docs/DSH-compatibility-and-market-audit-2026-10-06.md)。
 
 ## 项目目的
 
@@ -10,7 +10,7 @@
 
 ## 核心理念
 
-官方 compaction 保证会话还能继续；本插件保证关键事实、行为约束和项目架构能跨过压缩边界继续存活。
+官方 compaction 提供会话继续与溢出恢复机制；本插件量化并补偿关键事实和约束的损失，提供项目架构回查，但不保证压缩后任务必然正确。
 
 ## 适宜人群
 
@@ -31,48 +31,56 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - **哈希归一化**：structureHash / updateLogHash 在 CRLF、行尾空白、连续空行归一化后计算，纯格式刷新不会误报不一致。
 - **排除/恢复语义**：文件被 exclude 期间发生的变化不追踪；re-include 会以当前状态重建 baseline，不会立即误报。
 - **显式对齐检查**：architecture check 直接报告 aligned/stale、语义变化分、检测方式、attestation revision 与一致性。
-- **跨语言保真指纹**：压缩前冻结精确值、CJK 二元语义单元与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
+- **跨语言保真指纹**：压缩前冻结精确值、CJK 字符二元组（词法指标）与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
 - **安全加固**：scope / glob 校验、symlink 逃逸拒绝；registry、reminder、calibration 统一使用带锁 CAS 写入。
 - **调度加固**：pre-step 语义检查按 workspace/scope 节流；会话缓存有上限；fingerprint 文件只保留最新 500 份。
 - **语言策略**：默认 `auto` 跟随会话语言，避免翻译两次；`en` 模式英文写摘要，但用户原话与精确值原样保留、不翻译。
-- **A/B 指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言组分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每条样本包含 `dominantLanguage`、`mixedRatio`、`cjkRatio`、`latinRatio`。中英混合会话进入 `mixed:<主语言>` 组。每个语言组累计 8 个样本后给出校准分级，门控仍使用原始确定性分级。
+- **全局注入预算**：摘要指令、补偿块与 pinned constraints 共享一个 CJK 估算 token 预算（`injectionMaxTokens`，默认 16000）。预算不足时先丢弃或截断低优先的 project brief、锚点、架构文档与刷新提示，精确值账本与 pinned constraints 最后才处理；发生截断时提示中留下 `<compaction_fidelity_injection_budget>` 标记，引擎日志记录被影响的块。
+- **补偿前后指纹校准**：压缩摘要的原始指纹与追加补偿块后的最终指纹按语言组分别记录到 `.dsh/compaction-fidelity/fidelity-calibration.json`；每条样本包含 `dominantLanguage`、`mixedRatio`、`cjkRatio`、`latinRatio`。中英混合会话进入 `mixed:<主语言>` 组。每个语言组累计 8 个样本后给出校准分级，诊断 gate 使用原始召回指标及最终探针/约束检查，不采用历史分位数。
 - **锚点质量**：锚点按 canonical identity 去重，按关系强度评分，并按类别限流（测试 2、文档 1、数据库 2）。
 
-### 校准数据看板
+### 校准数据看板与冷启动导入
 
-fidelity-calibration.json 是核心证据资产。静态示例：
+`fidelity-calibration.json` 是核心证据资产。现可查看实时统计，并从工作区内的 JSON 文件导入可信样本：
+
+```text
+/compaction-fidelity calibration summary
+/compaction-fidelity calibration import trusted-samples.json
+```
+
+导入校验时间、语言组及 `[0,1]` 内的原始/最终分数；拒绝无效或过大的文件，去重并记录相对来源，只保留最近 500 条。损坏的既有账本不会被静默清空。最小合法样本：
 
 ```json
 {
   "samples": [
-    { "calibrationKey": "zh", "dominantLanguage": "zh", "mixedRatio": 0.05, "exactOverall": 0.84, "cjkRecall": 0.79, "structure": 0.92 },
-    { "calibrationKey": "mixed:en", "dominantLanguage": "en", "mixedRatio": 0.42, "exactOverall": 0.71, "cjkRecall": 0.88, "structure": 0.90 }
+    { "at": "2026-10-06T00:00:00.000Z", "language": "zh", "calibrationKey": "zh", "rawScore": 0.68, "finalScore": 0.84 },
+    { "at": "2026-10-06T00:01:00.000Z", "language": "en", "calibrationKey": "mixed:en", "mixedRatio": 0.42, "rawScore": 0.61, "finalScore": 0.71 }
   ]
 }
 ```
 
-每个语言组累计 8 个样本前，门控继续使用原始确定性 L0-L3 分级；可以把可信会话样本手动合并进这个数组，缩短冷启动时间。
+每组累计 8 个样本后才显示校准分级；诊断 gate 使用固定召回阈值及探针/约束检查，不采用历史分位数。混合语言样本不会进入纯语言分位数。
 
 ### 与压缩后端的关系
 
-本插件是保真观测层，不替换 summarize()。压缩后端决定保留什么；本层记录精确值、CJK 与结构最终存活多少。与压缩后端在 profile 层共存是可能方向，但尚未验证。
+本插件的引擎子类**确实覆盖了 `summarize()`**：它生成双语摘要、对比原始与补偿后指纹、记录保真度。因此准确定位是“带观测能力的压缩后端”，不是纯旁路观测层。`dsh-compaction-pro` 等后端也占用压缩服务/预设行；同一预设中并用尚未验证，不能宣称兼容。
 - **提醒退避持久化**：架构刷新提醒按 0 -> 5 分钟 -> 30 分钟退避，之后只保留 status 可见；状态存于 `.dsh/compaction-fidelity/architecture-reminders.json`。
 
-> 本插件按 DSH Desktop 0.2.0-rc.2 生成并锁定 peer 版本。0.1.5-rc.3 的 preset / 压缩 API 不同，不能混用。
+> 本插件按 DSH Desktop 2.0.17 内嵌的 Harness 0.2.0-rc.2 生成并锁定 peer 版本。独立安装的旧 CLI 0.1.5-rc.3 的 preset / 压缩 API 不同，不能混用。
 >
-> **DSH runtime 修复**：DSH Desktop 0.2.0-rc.2 的 `minimal` preset 默认没有任何压缩后端；`@deepseek-ai/dsh-token-meter` 固定按 4 字符/token 估算，中文会被严重低估。安装本插件后请执行一次（DSH 升级后需重新执行）：
+> **可选的本机 DSH runtime 修改**：本 bundle patch 已给 `minimal` preset 加入压缩组，不需要修改宿主文件才能安装。下列脚本另行修改安装目录内的 `minimal` preset 与 token-meter，用于实验性 CJK 估算；不会在安装时自动运行，也不属于市场 bundle 契约。只在核对过 `0.2.0-rc.2` 的本机安装后手动执行；DSH 升级后先重新核对兼容性：
 >
 > ```powershell
 > node scripts/patch-dsh-runtime.mjs
 > node scripts/patch-dsh-runtime.mjs --restore   # 可选回滚
 > ```
 >
-> 脚本会给 `minimal` preset 挂上官方 `compaction-basic` 安全网（`/compact`、工具结果修剪、溢出恢复均可用），并把 token-meter 改为 CJK 感知估算（ASCII 仍 4 字符/token；provider usage 锚点仍优先）。Compaction-Fidelity bundle patch 现在覆盖 `standard` / `cordis` / `ptc` / `minimal` 四个 preset。安装脚本会强制刷新 profile 里的 `file:` 依赖并校验 `dsh.client` + `lib/client.js`，避免客户端 UI 旧副本不生效。
+> 脚本带备份与 `--restore` 回滚；宿主修改不随 bundle 卸载而自动恢复。长期应通过 DSH 官方扩展点或上游修复替代。Compaction-Fidelity bundle patch 覆盖 `standard` / `cordis` / `ptc` / `minimal` 四个 preset。
 
 
 ## 为什么值得用（简明版）
 
-- CJK 计量：4 字符/token 严重低估中文，本插件用 0.8 token/char 保守估计。
+- CJK 计量：可选的本机 runtime 修改采用 0.8 token/中文字符；bundle 安装本身不改 DSH token-meter。
 - 有效预算：显式先算 `W - O - H`，再比较压缩线；与官方 min(W×ratio, W−O−H) 语义对齐，并便于诊断估算误差。
 - 保真量化：精确值 ledger + CJK bigram + L0–L3 + 自动补偿。
 - 压缩后回查：项目认知索引 + brief/lookup + 架构锚点注入。
@@ -82,7 +90,7 @@ fidelity-calibration.json 是核心证据资产。静态示例：
 
 ## 为什么需要量化校准
 
-逐字保留或选择性压缩只决定留下了什么，却不会告诉你生成摘要丢了多少精确值或 CJK 二元组。本插件在每次压缩后记录原始摘要与最终摘要（含补偿块）的分语言保留指标，写入 .dsh/compaction-fidelity/ 并随 Git 版本化；每个语言组累计 8 个样本后，才用这些历史给出一份校准分级作为证据。门控在样本不足时仍使用原始确定性分级。
+逐字保留或选择性压缩只决定留下了什么，却不会告诉你生成摘要丢了多少精确值或 CJK 二元组。本插件在每次压缩后记录原始摘要与最终摘要（含补偿块）的分语言保留指标，写入 .dsh/compaction-fidelity/ ；经审查和脱敏后可选择随 Git 版本化；每个语言组累计 8 个样本后，才用这些历史给出一份校准分级作为证据。诊断 gate 使用固定召回阈值及探针/约束检查，独立于历史分位数。
 
 ## 设计理念展开
 
@@ -95,32 +103,33 @@ fidelity-calibration.json 是核心证据资产。静态示例：
 
 ## 已知边界与验证方向
 
-- A/B 指纹校准现已记录原始摘要与最终摘要的分语言指标，但下游 QA 相关性仍未测量。
+- 补偿前后指纹校准现已记录原始摘要与最终摘要的分语言指标，但下游 QA 相关性仍未测量。
 - 校准按语言组各需 8 个样本；中英混合会话进入 `mixed:<主语言>` 组，避免污染纯 zh/en 统计。
 - 锚点 quality 权重仍为固定值；项目级权重覆盖列为 P1 候选。
-- 补偿块/锚点可能稀释注意力；已实现 2048 token 软上限、类别优先级与锚点质量限流，最优阈值仍需更多校准样本。
+- 补偿块/锚点可能稀释注意力；已实现 2048 token 软上限、类别优先级、锚点质量限流，以及 CJK 估算的 16000 token 全局注入预算；最优阈值仍需更多校准样本。
 - zh/en/bilingual 摘要策略缺对照；约束 ledger 尚未覆盖。
-- 不建议默认降低 256K 输出预留；provider 约束仍成立。
+- 16000 token 全局注入预算是保守工程上限，不是经实验证明的最优值。触发截断时，提示中会出现 `<compaction_fidelity_injection_budget>` 标记，引擎日志会记录被丢弃或缩短的块。
+- 输出预留取当前路由请求/模型配置；summaryMaxTokens 与 headroom 默认各为 65536，应按实际模型预算调整。
 - 256K/350K/512K 自定义线需验证安全收益与信息损失的权衡。
 
 ## 1. 安装、卸载与总开关
 
-### DSH Desktop 0.2.0-rc.2
+### DSH Desktop 2.0.17（内嵌 Harness 0.2.0-rc.2）
 
-1. 在 Desktop 插件管理页安装本 bundle（本地路径，或发布后的 npm 包 `dsh-compaction-fidelity`）。
+1. 通过 Desktop 终端/插件管理器安装[已发布 GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.2.0-rc.2.plugin.1.25)或本地检出。当前 npm 上查不到 `dsh-compaction-fidelity`，仓库也尚未被 `awesome-dsh-plugin` 收录；Desktop 内置社区市场的一键安装要求 npm `latest` 为稳定版本，因此当前 GitHub-only 预发布版本暂不满足该路径。
 2. bundle 加入 `dsh.profile.bundles` 并应用 `cordis.patch.yml`：
    - 插入宿主插件行 `compaction-fidelity`（工具、命令、索引、锚点注入）；
    - 按 id 覆盖内置 `preset-standard` 与 `preset-cordis`，把 `compaction-basic` 行替换为 `dsh-compaction-fidelity/engine`。
 3. 新建会话使用覆盖后的 preset；已存在会话保持启动时组合，不会中途换引擎。
 
-### CLI profile
+### Desktop CLI profile
 
 ```powershell
-dsh plugin --profile web add <path-to-dsh-compaction-fidelity>
-dsh plugin --profile web remove dsh-compaction-fidelity
+dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.2.0-rc.2.plugin.1.25'
+dsh plugin --profile desktop remove dsh-compaction-fidelity
 ```
 
-卸载后覆盖层消失，内置 `standard`/`cordis` 自动恢复官方压缩；重启后新会话恢复官方行为。
+独立 CLI Web profile 可将 `desktop` 改为 `web`。卸载后覆盖层消失，内置 `standard`/`cordis` 自动恢复官方压缩；重启后新会话恢复官方行为。
 
 ### 关闭语义
 
@@ -143,7 +152,7 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 - 仍超阈值时按 retainTokens 保留最近原文，压缩最旧的 tool-pair 平衡区间；
 - 通过官方 compactRegion() 完成落盘、替换与完整性检查；
 - 压缩失败只记录警告并继续当前轮次，不阻塞对话；
-- 350k/800k/80%/full/1m 模式不自己做前缀压缩，交给官方按 80% 窗口线与输出预留计算触发点。
+- `350k` 是绝对阈值模式；`800k` 会受模型有效预算封顶；`80%` / `full` / `1m` 才走官方动态压力线。
 
 ### 配置字段
 
@@ -157,6 +166,7 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 | summaryMaxTokens | 65536 | 摘要输出上限；与官方 0.2.0 默认对齐 |
 | compensationMaxTokens | 2048 | 补偿块 token 预算；按 paths > commands > errors > identifiers > numbers 整条截断 |
 | summaryProvider / summaryModel | 继承会话路由 | 成对设置，可路由到更便宜或更强的模型 |
+| injectionMaxTokens | 16000 | 汇总提示、补偿块与 pinned constraints 共享的 CJK 估算 token 预算；低优先内容先截断，精确值账本与约束最后处理 |
 | compactionRetries | 1 | 阈值仍高时的额外压缩次数 |
 | ledger | true | 确定性精确值账本 |
 | anchors | true | 摘要中注入 Compaction-Fidelity 简览与锚点 |
@@ -174,6 +184,8 @@ dsh plugin --profile web remove dsh-compaction-fidelity
 /compaction-fidelity threshold 300000   # 300K 等价
 /compaction-fidelity retain 65536
 /compaction-fidelity language auto | zh | en | bilingual
+/compaction-fidelity calibration summary
+/compaction-fidelity calibration import trusted-samples.json
 ```
 
 阈值、保留量、语言会即时写入进程内全局状态，并持久化到 DSH home 的 .dsh-compaction-fidelity/state.json 与工作区 .dsh/compaction-fidelity/state.json。当前进程立即生效，重启后继续生效。
@@ -264,18 +276,18 @@ dsh plugin --profile web remove dsh-compaction-fidelity
   baseline.json       文件哈希基线
   state.json          当前工作区的运行时开关
 ```
-  fidelity-calibration.json  A/B 指纹校准样本
+  fidelity-calibration.json  补偿前后指纹校准样本
   architecture-reminders.json 架构刷新提醒退避状态
 
-建议把这些文件提交到 Git。若项目 .gitignore 忽略了 .dsh，需要显式放行 .dsh/compaction-fidelity。
+只把经过审查和脱敏的证据文件提交到 Git。旧版本（至 1.25）的 `fingerprints/*.json` 可能含有缺失的精确值与约束原文；新版本只写聚合指标，但导入的校准样本仍可能带额外字段。公开仓库不要无审查地放行整个 `.dsh/compaction-fidelity/`。
 
 ## 6. 安全与边界
 
-- 本地优先：不联网，不读数据库凭据，不执行仓库代码。
+- 索引与指纹计算在本地进行，不读数据库凭据、不执行仓库代码；摘要生成通过 DSH 配置的 LLM 服务，可能调用远程模型。
 - 索引是启发式结果：入口、架构文档、高 fan-in 是检索锚点，不保证 100% 语义正确；可用 /compaction-fidelity reindex 重建。
-- 工具与命令只在 DSH 进程内运行，受 DSH 权限与审批体系约束。
+- 插件工具与命令在 DSH Host 进程运行，不构成独立沙箱；插件自身负责路径校验和文件操作边界。
 - 覆盖内置 preset 是按 id 的整段 config 覆盖；DSH 升级后内置 preset 结构变化时需要重新生成 patch。
-- 350k/800k/80%/full/1m 不会在固定 token 处压缩；触发点由官方 80% 窗口线与输出预留、headroom 共同决定。
+- `350k` 等固定档在达到有效绝对阈值时触发；`800k` 会受窗口及输出预留封顶。`80%` / `full` / `1m` 采用官方动态压力线。
 
 ## 7. 开发
 
@@ -295,7 +307,7 @@ node scripts/generate-preset-patch.mjs
 | src/summarizer.mjs | 语言检测、精确值账本、摘要指令 |
 | src/project-index.mjs | Compaction-Fidelity 扫描、索引、锚点、简览、搜索、verify |
 | scripts/generate-preset-patch.mjs | 从 DSH 内置 preset 生成覆盖 patch |
-| src/fidelity-calibration.mjs | A/B 指纹度量、分语言校准与样本持久化 |
+| src/fidelity-calibration.mjs | 补偿前后指纹度量、分语言校准与样本持久化 |
 | src/reminder-state.mjs | 架构刷新提醒退避与持久化状态 |
 | src/architecture-io.mjs | 锁 + CAS + AtomicWrite 事务原语 |
 | src/architecture-changes.mjs | Git/hash/mtime 变更检测与语义变化分 |
@@ -324,7 +336,7 @@ TESTBOX
 ```
 
 - DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
-- 当前版本：0.2.0-rc.2.plugin.1.25。
+- 已发布版本：0.2.0-rc.2.plugin.1.25；当前工作树：0.2.0-rc.2.plugin.1.26-dev.0（未发布）。
 - 插件本体为 1.0；功能迭代递增为 1.1、2.0。
 
 - DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。
@@ -397,7 +409,7 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 - baseline.json 路径在 verify 时走 isSafeRelativePath 与 joinWorkspace 守卫，拒绝路径穿越。
 - .env、*.key、*.pem、id_rsa、credentials/secrets 等敏感文件不进入索引与 baseline 哈希。
 - /compaction-fidelity purge --yes 校验目标在工作区内且不是符号链接。
-- 索引只保存路径、类型、导入关系、哈希与表名，不保存文件内容；插件不联网、不读数据库凭据。
+- 索引以路径、类型、导入关系、哈希和表名为主；本地扫描不联网、不读数据库凭据。摘要仍通过 DSH 的 LLM 服务生成。
 
 如果本机安装了 DSH Desktop，可运行 npm run verify:local：脚本会临时链接 DSH 的 node_modules，验证 engine 构造、宿主插件注册、摘要指令与绝对阈值区间选择，然后清理链接。
 
@@ -532,3 +544,4 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 - 生成内容按目标文件夹过滤模块、文件与数据库锚点；
 - update 动作仍然只追加，不覆写原介绍。
 
+旧指纹迁移默认只读。apply 会在工作区内创建独占备份；备份仍含原文，不能直接公开。工具检测嵌套 final-fidelity 精确值，拒绝链接、硬链接及复用备份目录，不修改校准账本。真正的 basic/pro/fidelity 对照见[配对评测协议](docs/paired-evaluation-protocol.zh.md)，目前尚未执行；保真 gate 只报告诊断，不阻止压缩。

@@ -2,16 +2,19 @@
 
 ## Supported versions
 
-This repository targets DSH Desktop 0.2.0-rc.2 and follows the package version scheme `0.2.0-rc.2.plugin.*`.
+This repository targets the DeepSeek Harness `0.2.0-rc.2` runtime bundled in community DSH Desktop `2.0.17` and follows the package version scheme `0.2.0-rc.2.plugin.*`.
 
 ## Runtime security model
 
 - The plugin runs locally inside the DSH process.
-- It does not make network requests and does not include telemetry.
+- It has no independent HTTP client or telemetry. Summary generation uses DSH's configured LLM service, which may send the conversation to the selected remote provider.
 - It reads workspace files to build the project index.
 - Sensitive files such as .env, .npmrc, .netrc, .pypirc, SSH keys, credentials, and secrets are excluded from indexing and baseline hashes.
 - It writes project artifacts under the workspace .dsh/compaction-fidelity directory and control state under the DSH home directory.
-- The official compaction engine remains the final fallback if the plugin fails or is disabled.
+- The official compaction engine remains the fallback if the plugin fails or is disabled; the enabled plugin overrides `summarize()`.
+- New fingerprint sidecars store aggregate recall and constraint counts, not missing exact strings or constraint text. Older sidecars from releases through `1.25` may contain raw values and should be reviewed before sharing or committing.
+- Imported calibration JSON is user-selected local evidence and may contain additional fields. Review and redact it before adding `.dsh/compaction-fidelity` to Git, especially in a public repository.
+- Audit known legacy fields with `npm run migrate:fingerprint-privacy` before sharing fingerprint sidecars. It defaults to a read-only audit of `.dsh/compaction-fidelity/fingerprints/*.json`; `npm run migrate:fingerprint-privacy -- --apply` backs up legacy sidecars first, then replaces raw missing values and constraint text with aggregate counts.
 
 ## Path and sidecar safety
 
@@ -24,7 +27,7 @@ This repository targets DSH Desktop 0.2.0-rc.2 and follows the package version s
 ## Optional runtime patch
 
 `scripts/patch-dsh-runtime.mjs` modifies the installed DSH runtime so the minimal preset has an official compaction safety net and the token meter is CJK-aware.
-This step is optional but recommended. It changes files in the local DSH installation; a restore mode is provided.
+This step is optional and is not required for bundle installation. It changes files in the local DSH installation; a restore mode is provided. Recheck the target DSH version before using it after an update.
 The patch script does not copy DSH source code into this repository.
 
 ## Reporting
@@ -34,7 +37,7 @@ Do not include live tokens, credentials, or private repository contents in publi
 
 ## Current audit notes
 
-- No eval, no dynamic code generation, and no runtime network calls were found in the plugin runtime.
+- No eval or independent runtime network client was found in the plugin modules; model calls go through DSH's LLM service.
 - The install and patch scripts use child_process for fixed local package-manager and DSH operations.
 - Index scanning is bounded by max file count and max file size and runs outside the critical token path.
 - The pre-step pressure check and architecture prompt are best-effort and never replace the official overflow recovery.
@@ -48,3 +51,6 @@ Do not include live tokens, credentials, or private repository contents in publi
 - Model behavior, prompt injection from untrusted repository contents, or malicious workspace files that are readable by the current user.
 - Security of third-party plugins installed alongside this bundle.
 
+## Migration backup handling
+
+The migration covers known fingerprint fields, including nested final-fidelity values. It does not sanitize arbitrary metadata or the calibration store. Backups retain the original private text: exclude `fingerprint-privacy-backup/` from shared evidence and review imported samples separately. Custom `--backup-dir` paths resolve relative to the selected workspace and must name a new directory inside it, separate from fingerprints. Linked/junction paths, hard-linked files, oversized/non-object JSON, and damaged sidecars are rejected or skipped. Apply reports skipped files and exits nonzero; inspect the report before treating migration as complete. Stop active compaction while migrating; locked compare-and-swap writes detect ordinary conflicts but do not provide a filesystem sandbox against hostile concurrent path swaps.

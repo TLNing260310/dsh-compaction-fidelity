@@ -11,11 +11,13 @@ import { buildCompensation, buildFingerprint, compareFingerprints } from './fing
 import { compareConstraintLedger, extractConstraintLedger } from './constraint-ledger.mjs';
 import { buildFidelitySample, calibrateFidelityLevel, recordFidelitySample } from './fidelity-calibration.mjs';
 import { buildFidelityProbes, evaluateFidelityGate } from './fidelity-gate.mjs';
+import { aggregateComparison as storedComparison, aggregateConstraints as storedConstraints, aggregateGate as storedGate } from './fingerprint-privacy.mjs';
 import { readArchitectureDoc } from './architecture-doc.mjs';
+import { assertWorkspaceContained } from './architecture-io.mjs';
 import { pickRetentionRange } from './range.mjs';
 import { mergeRuntimeState, normalizeThreshold, resolveAbsoluteThresholdPlan, resolveThresholdPlan } from './state.mjs';
-import { buildSummaryInstruction, extractFilePathsFromMessages, extractLedger } from './summarizer.mjs';
-import { clampText, isSafeRelativePath } from './util.mjs';
+import { DEFAULT_INJECTION_MAX_TOKENS, buildSummaryInstructionWithDiagnostics, extractFilePathsFromMessages, extractLedger } from './summarizer.mjs';
+import { clampText, clampTextToTokens, estimateTextTokens, isSafeRelativePath } from './util.mjs';
 
 const SUMMARY_LANGUAGES = new Set(['auto', 'zh', 'en', 'bilingual']);
 
@@ -100,6 +102,7 @@ function normalizeEngineConfig(config = {}) {
     summaryLanguage,
     summaryMaxTokens: Number.isInteger(config.summaryMaxTokens) && config.summaryMaxTokens >= 1024 ? config.summaryMaxTokens : 65536,
     compensationMaxTokens: Number.isInteger(config.compensationMaxTokens) && config.compensationMaxTokens >= 128 ? config.compensationMaxTokens : 2048,
+    injectionMaxTokens: Number.isInteger(config.injectionMaxTokens) && config.injectionMaxTokens >= 2048 ? config.injectionMaxTokens : DEFAULT_INJECTION_MAX_TOKENS,
     summaryProvider: summaryProvider.length > 0 ? summaryProvider : undefined,
     summaryModel: summaryModel.length > 0 ? summaryModel : undefined,
     compactionRetries: Number.isInteger(config.compactionRetries) && config.compactionRetries >= 0 ? config.compactionRetries : 1,
@@ -130,6 +133,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     summaryLanguage: z.string().default('auto'),
     summaryMaxTokens: z.number().step(1).min(1024).default(65536),
     compensationMaxTokens: z.number().step(1).min(256).default(2048),
+    injectionMaxTokens: z.number().step(1).min(2048).default(DEFAULT_INJECTION_MAX_TOKENS),
     summaryProvider: z.string(),
     summaryModel: z.string(),
     compactionRetries: z.number().step(1).min(0).default(1),
@@ -237,7 +241,6 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     const hit = this.modelInfoCache.get(key);
     if (hit !== undefined && Date.now() - hit.at < 60000) return hit.info;
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal);
-    this.modelInfoCache.set(key, { at: Date.now(), info });
     if (!this.modelInfoCache.has(key) && this.modelInfoCache.size >= MAX_MODEL_INFO_CACHE) {
       const oldest = this.modelInfoCache.keys().next().value;
       if (oldest !== undefined) this.modelInfoCache.delete(oldest);
@@ -339,7 +342,6 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
           this.fidelityConfig.calibrationMinRatio,
           this.fidelityConfig.calibrationMaxRatio,
         );
-        this.calibrationCache.set(cacheKey, ratio);
         if (!this.calibrationCache.has(cacheKey) && this.calibrationCache.size >= MAX_CALIBRATION_CACHE) {
           const oldest = this.calibrationCache.keys().next().value;
           if (oldest !== undefined) this.calibrationCache.delete(oldest);
@@ -399,10 +401,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
   }
 
   async persistFingerprint(agent, before, after, comparison, indexDir = this.fidelityConfig.indexDir, compensation = undefined, fidelityGate = undefined, constraintComparison = undefined, calibration = undefined) {
+    const cwd = agent?.session?.header?.cwd ?? process.cwd();
+    const dir = join(cwd, indexDir, 'fingerprints');
     try {
-      const cwd = agent?.session?.header?.cwd ?? process.cwd();
+      assertWorkspaceContained(cwd, join(dir, 'fingerprint.json'));
       const sessionId = String(agent?.session?.id ?? 'unknown').replace(/[^A-Za-z0-9._-]/g, '_');
-      const dir = join(cwd, indexDir, 'fingerprints');
       await mkdir(dir, { recursive: true });
       const summarizeSide = (fingerprint) => ({
         language: fingerprint.language,
@@ -415,16 +418,15 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       const record = {
         generatedAt: new Date().toISOString(),
         sessionId,
-        fidelity: comparison,
+        fidelity: storedComparison(comparison),
         ...(compensation === undefined ? {} : { compensation: { maxTokens: compensation.maxTokens, tokens: compensation.tokens, truncated: compensation.truncated, entriesByCategory: compensation.entriesByCategory, omittedByCategory: compensation.omittedByCategory } }),
-        ...(fidelityGate === undefined ? {} : { gate: fidelityGate }),
-        ...(constraintComparison === undefined ? {} : { constraints: constraintComparison }),
-        ...(calibration === undefined ? {} : { calibration }),
+        ...(fidelityGate === undefined ? {} : { gate: storedGate(fidelityGate) }),
+        ...(constraintComparison === undefined ? {} : { constraints: storedConstraints(constraintComparison) }),
+        ...(calibration === undefined || calibration === null ? {} : { calibration: { ...calibration, finalFidelity: storedComparison(calibration.finalFidelity) } }),
         before: summarizeSide(before),
         after: summarizeSide(after),
       };
       await writeFile(join(dir, `${sessionId}-${Date.now()}.json`), JSON.stringify(record, null, 2), 'utf8');
-    } catch (error) {
       try {
         const names = readdirSync(dir).filter((name) => name.endsWith(".json"));
         if (names.length > MAX_FINGERPRINT_FILES) {
@@ -438,6 +440,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       } catch {
         // pruning is best effort
       }
+    } catch (error) {
       this.ctx.logger?.warn?.(`dsh-compaction-fidelity fingerprint persist failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -445,7 +448,13 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
   async summarize(input, agent, signal) {
     const runtime = this.runtimeFor(agent);
     if (!runtime.enabled) return super.summarize(input, agent, signal);
-    return this.summarizeFidelity(input, agent, signal, runtime);
+    try {
+      return await this.summarizeFidelity(input, agent, signal, runtime);
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') throw error;
+      this.ctx.logger?.warn?.(`compaction-fidelity summary failed: ${error instanceof Error ? error.message : String(error)}; falling back to official summary`);
+      return super.summarize(input, agent, signal);
+    }
   }
 
   async summarizeFidelity(input, agent, signal, runtime) {
@@ -555,7 +564,9 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       this.ctx.logger?.warn?.("compaction-fidelity architecture doc lookup failed: " + (error instanceof Error ? error.message : String(error)));
     }
     const constraintLedger = extractConstraintLedger(input.messages ?? []);
-    const instruction = buildSummaryInstruction({
+    const injectionBudget = this.fidelityConfig.injectionMaxTokens;
+    const compensationReserve = Math.min(this.fidelityConfig.compensationMaxTokens, injectionBudget);
+    const instructionResult = buildSummaryInstructionWithDiagnostics({
       language: runtime.summaryLanguage,
       ledger,
       brief,
@@ -563,7 +574,13 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       constraints: constraintLedger.constraints,
       architectureDocs,
       cognitionRefreshScopes,
+      maxTokens: injectionBudget,
+      reserveTokens: compensationReserve,
     });
+    if (instructionResult.diagnostics.truncated) {
+      this.ctx.logger?.warn?.("compaction-fidelity injection budget truncated: dropped=[" + instructionResult.diagnostics.droppedBlocks.join(",") + "] shortened=[" + instructionResult.diagnostics.truncatedBlocks.map((item) => item.name).join(",") + "]");
+    }
+    const instruction = instructionResult.text;
     const messages = [
       ...(input.messages ?? []),
       deepFreeze({
@@ -593,14 +610,28 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     if (!summary.some((block) => block.text.trim().length > 0)) throw new Error('compaction-fidelity summarization produced no text summary content');
     const postFingerprint = buildFingerprint([{ role: 'assistant', content: summary.map((block) => ({ type: 'text', text: block.text })) }]);
     const fidelity = compareFingerprints(preFingerprint, postFingerprint);
-    const compensation = buildCompensation(fidelity, { maxTokens: this.fidelityConfig.compensationMaxTokens });
-    if (compensation.text.length > 0) summary.push({ type: 'text', text: compensation.text });
     const summaryPlain = summary.map((block) => block.text).join("\n");
     const constraintComparison = compareConstraintLedger(constraintLedger, summaryPlain);
     const pinned = constraintComparison.verdicts.filter((verdict) => verdict.verdict !== "preserved");
-    if (pinned.length > 0) {
-      const pinnedText = pinned.map((verdict, index) => "- [" + (index + 1) + "] " + verdict.text).join("\n");
-      summary.push({ type: 'text', text: "<pinned_constraints>\n" + pinnedText + "\n</pinned_constraints>" });
+    const pinnedText = pinned.map((verdict, index) => "- [" + (index + 1) + "] " + verdict.text).join("\n");
+    const postInjectionBudget = Math.max(0, injectionBudget - instructionResult.diagnostics.estimatedTokens);
+    const pinnedTokens = estimateTextTokens(pinnedText);
+    const pinnedReserved = pinnedText.length > 0 ? Math.min(pinnedTokens, Math.floor(postInjectionBudget / 2)) : 0;
+    const compensationBudget = Math.min(this.fidelityConfig.compensationMaxTokens, Math.max(0, postInjectionBudget - pinnedReserved));
+    const compensation = compensationBudget >= 128
+      ? buildCompensation(fidelity, { maxTokens: compensationBudget })
+      : { text: "", tokens: 0, maxTokens: compensationBudget, truncated: false, entriesByCategory: {}, omittedByCategory: {} };
+    if (compensation.text.length > 0) summary.push({ type: 'text', text: compensation.text });
+    if (pinnedText.length > 0) {
+      const remainingAfterCompensation = Math.max(0, postInjectionBudget - estimateTextTokens(compensation.text));
+      const pinnedBudget = Math.max(pinnedReserved, remainingAfterCompensation);
+      const cappedPinnedText = clampTextToTokens(pinnedText, pinnedBudget);
+      if (cappedPinnedText.length < pinnedText.length) {
+        this.ctx.logger?.warn?.("compaction-fidelity pinned constraints truncated to fit the injection budget: " + cappedPinnedText.length + "/" + pinnedText.length + " chars");
+      }
+      if (cappedPinnedText.length > 0) {
+        summary.push({ type: 'text', text: "<pinned_constraints>\n" + cappedPinnedText + "\n</pinned_constraints>" });
+      }
     }
     const gate = evaluateFidelityGate({ fingerprint: fidelity, constraints: constraintLedger, probes: buildFidelityProbes(preFingerprint), summaryText: summary.map((block) => block.text).join("\n") });
     if (!gate.ok) this.ctx.logger?.warn?.("compaction-fidelity gate: " + gate.failures.join(", "));
@@ -642,18 +673,3 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
 }
 
 export default CompactionFidelityEngine;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

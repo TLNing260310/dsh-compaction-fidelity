@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0-rc.2.plugin.1.26-dev.0 (unreleased)
+
+- Corrected pure/mixed-language calibration isolation and added a bounded calibration summary/import command with validation, deduplication, and provenance.
+- Refused to overwrite malformed calibration evidence during recording or import.
+- Fixed model-info and token-calibration cache eviction; fingerprint sidecars now retain aggregate metrics rather than exact missing values or constraint text, and prune on successful writes.
+- Added a real official-summary fallback for fidelity-summary failures while preserving cancellation, and guarded calibration/fingerprint store paths against linked-parent escapes.
+- Added DSH peer and subpath display metadata, corrected GitHub-only distribution and optional runtime-patch instructions, and documented the current marketplace gap.
+
+- Added a shared CJK-aware global injection budget across the summary instruction, compensation block, and pinned constraints; low-priority anchors/briefs/architecture docs are dropped first, and truncation is observable through a prompt marker and engine warning.
+- Added a dry-run-first legacy fingerprint privacy migration script: `npm run migrate:fingerprint-privacy` audits legacy sidecars, and `-- --apply` backs them up before replacing raw missing values and constraint text with aggregate counts.
+- Unified runtime/migration aggregate projections, removed gate failure details, detected nested legacy values, and added exclusive workspace-contained backups with CAS conflict protection and linked-path rejection.
+- Added a frozen three-backend paired evaluation protocol; real long-session results remain pending.
+
 ## 0.2.0-rc.2.plugin.1.25
 
 Security and runtime-scheduling audit hardening.

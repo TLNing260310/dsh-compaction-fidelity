@@ -6,7 +6,7 @@
 // network/model dependency), so a slow neural embedding is not required to
 // decide whether a summary has lost Chinese content or exact values.
 import { extractLedger } from './summarizer.mjs';
-import { uniqueBy } from './util.mjs';
+import { estimateTextTokens, uniqueBy } from './util.mjs';
 
 const CJK_RUN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]{2,}/g;
 const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
@@ -171,16 +171,7 @@ function isCjkCodePoint(codePoint) {
 }
 
 export function estimateCompensationTokens(text) {
-  let cjk = 0;
-  let ascii = 0;
-  let other = 0;
-  for (const ch of String(text ?? "")) {
-    const cp = ch.codePointAt(0);
-    if (isCjkCodePoint(cp)) cjk += 1;
-    else if (cp <= 0x7f) ascii += 1;
-    else other += 1;
-  }
-  return Math.ceil(cjk * 0.8 + other * 0.5 + ascii / 4);
+  return estimateTextTokens(text);
 }
 
 function compensationItem(value) {
@@ -275,6 +266,3 @@ export function buildCompensation(comparison, options = {}) {
   const truncated = Object.values(omittedByCategory).some((value) => value > 0);
   return { text, tokens: estimateCompensationTokens(text), maxTokens, truncated, entriesByCategory, omittedByCategory };
 }
-
-
-

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Compaction-Fidelity 压缩引擎",
+    "description": "双语压缩摘要、确定性保真检查与缺失精确值补偿。"
+  }
+}

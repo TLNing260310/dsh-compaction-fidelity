@@ -1,9 +1,9 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildFidelitySample, calibrateFidelityLevel, compositeFidelityScore, recordFidelitySample } from "../src/fidelity-calibration.mjs";
+import { buildFidelitySample, calibrateFidelityLevel, compositeFidelityScore, importFidelityCalibration, readFidelityCalibration, recordFidelitySample, summarizeFidelityCalibration } from "../src/fidelity-calibration.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-calibration-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -77,6 +77,45 @@ test("mixed-language samples get a dedicated calibration key", () => {
   assert.equal(sample.calibrationKey, "mixed:zh");
 });
 
+test("mixed-language samples never enter a pure-language percentile", () => {
+  const samples = Array.from({ length: 8 }, (_, index) => ({
+    language: "zh", calibrationKey: "mixed:zh", mixedRatio: 0.4, finalScore: (index + 1) / 10,
+  }));
+  assert.equal(calibrateFidelityLevel(comparison("L2", 0.5, 0.5), samples, "zh").sampleCount, 0);
+  assert.equal(calibrateFidelityLevel(comparison("L2", 0.5, 0.5), samples, "mixed:zh").sampleCount, 8);
+  assert.equal(summarizeFidelityCalibration(samples)[0].key, "mixed:zh");
+});
+
+test("calibration import validates, deduplicates, marks provenance, and preserves a damaged store", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-import-"));
+  const indexDir = ".dsh/compaction-fidelity";
+  try {
+    const source = "trusted-samples.json";
+    const sample = {
+      at: "2026-10-06T00:00:00.000Z", language: "zh", dominantLanguage: "zh",
+      mixedRatio: 0.4, rawScore: 0.5, finalScore: 0.7,
+    };
+    writeFileSync(join(cwd, source), JSON.stringify({ version: 1, samples: [sample, { ...sample }] }));
+    assert.deepEqual(importFidelityCalibration(cwd, indexDir, source), { added: 1, duplicates: 1, retained: 1 });
+    assert.deepEqual(importFidelityCalibration(cwd, indexDir, source), { added: 0, duplicates: 2, retained: 1 });
+    const imported = readFidelityCalibration(cwd, indexDir).samples[0];
+    assert.equal(imported.importSource.file, source);
+    assert.equal(summarizeFidelityCalibration([imported])[0].key, "mixed:zh");
+    assert.throws(() => importFidelityCalibration(cwd, indexDir, "../trusted-samples.json"), /workspace-relative/);
+    writeFileSync(join(cwd, source), JSON.stringify({ samples: [{ ...sample, finalScore: 2 }] }));
+    assert.throws(() => importFidelityCalibration(cwd, indexDir, source), /finalScore/);
+    writeFileSync(join(cwd, source), JSON.stringify({ samples: [{ ...sample, calibrationKey: "zh" }] }));
+    assert.throws(() => importFidelityCalibration(cwd, indexDir, source), /calibrationKey disagrees/);
+    assert.equal(readFidelityCalibration(cwd, indexDir).samples.length, 1);
+    const storePath = join(cwd, indexDir, "fidelity-calibration.json");
+    writeFileSync(storePath, "{damaged");
+    assert.throws(() => recordFidelitySample(cwd, indexDir, sample), /invalid fidelity-calibration/);
+    assert.equal(readFileSync(storePath, "utf8"), "{damaged");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("recordFidelitySample persists calibration data under the workspace index", () => {
   const sample = buildFidelitySample({
     language: "en",
@@ -87,5 +126,24 @@ test("recordFidelitySample persists calibration data under the workspace index",
   const store = recordFidelitySample(root, ".dsh/compaction-fidelity", sample);
   assert.equal(store.samples.length, 1);
   assert.ok(existsSync(join(root, ".dsh", "compaction-fidelity", "fidelity-calibration.json")));
+});
+
+test("calibration stores reject traversal and linked parent escapes", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-contained-"));
+  const outside = mkdtempSync(join(tmpdir(), "compaction-fidelity-outside-"));
+  try {
+    assert.throws(() => recordFidelitySample(cwd, "../outside", {}), /workspace-relative/);
+    try {
+      symlinkSync(outside, join(cwd, "linked"), process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (error.code === "EPERM" || error.code === "EACCES") { t.skip("symlink creation is not permitted"); return; }
+      throw error;
+    }
+    assert.throws(() => recordFidelitySample(cwd, "linked/data", {}), /escapes workspace/);
+    assert.equal(existsSync(join(outside, "data", "fidelity-calibration.json")), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 });
 

@@ -1,4 +1,4 @@
-import { clampText, uniqueBy } from './util.mjs';
+import { clampText, estimateTextTokens, uniqueBy } from './util.mjs';
 
 
 
@@ -256,108 +256,207 @@ function languageHeadings(language) {
 
 
 
-export function buildSummaryInstruction({ language = 'auto', ledger, brief = '', anchors = '', constraints = [], architectureDocs = '', cognitionRefreshScopes = [], maxChars = 24000 } = {}) {
+export const DEFAULT_INJECTION_MAX_TOKENS = 16000;
 
-  const resolvedLanguage = language === 'auto' ? (ledger?.language === 'zh' ? 'zh' : ledger?.language === 'mixed' ? 'bilingual' : 'en') : language;
+const INJECTION_MARKER_RESERVE_TOKENS = 32;
+const INJECTION_MARKER_RESERVE_CHARS = 160;
 
-  const headings = languageHeadings(resolvedLanguage === 'mixed' ? 'bilingual' : resolvedLanguage);
-
-  const structure = headings.sections.map(([heading, hint]) => `## ${heading}\n- [${hint}]`).join('\n\n');
-
-  const ledgerText = clampText(JSON.stringify({
-
-    language: ledger?.language ?? 'unknown',
-
-    user_quotes: ledger?.userQuotes ?? [],
-
-    user_corrections: ledger?.corrections ?? [],
-
-    exact_paths: ledger?.paths ?? [],
-
-    exact_commands: ledger?.commands ?? [],
-
-    errors: ledger?.errors ?? [],
-
-    identifiers: ledger?.identifiers ?? [],
-
-    numbers: ledger?.numbers ?? [],
-
-  }, null, 2), 9000);
-
-  const constraintsText = (constraints ?? []).map((item, index) => "- [" + index + "] " + (item.text ?? item)).join("\n");
-
-  const languageRule = resolvedLanguage === 'zh'
-
-    ? '使用中文撰写检查点；所有路径、命令、错误串、标识符、数值必须原样保留，禁止翻译。'
-
-    : resolvedLanguage === 'bilingual'
-
-      ? 'Write the main prose in English; add concise Chinese notes for user-facing constraints. Preserve exact values verbatim.'
-
-      : 'Write concise English engineering prose. The `verbatim_user_input` and `exact_value_ledger` entries MUST stay in their original language and MUST NOT be translated.';
-
-  const acknowledgmentRule = 'This checkpoint is a lossy index, not a complete transcript. If a required fact is missing or uncertain, say so in "Critical Context"/"Compaction-Fidelity Anchors" and retrieve it with the available retrieval tools instead of guessing. Architecture facts are only locators here: after resuming, re-read `.dsh/compaction-fidelity/project.txt` and `.dsh/compaction-fidelity/PROJECT.md` before relying on them as ground truth.';
-
-  return [
-
-    'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.',
-
-    '',
-
-    `Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.`,
-
-    '',
-
-    structure,
-
-    '',
-
-    'Rules:',
-
-    `- ${languageRule}`,
-
-    '- The `exact_value_ledger` block below is generated deterministically from the original messages. Treat every entry as ground truth and copy it into the relevant section verbatim; never paraphrase or translate an exact value.',
-
-    '- `verbatim_user_input` contains the user’s own wording. Quote it verbatim where the exact wording matters; do not translate it.',
-
-    '- Capture user feedback and explicit instructions faithfully, especially corrections.',
-    '- Treat pinned_constraints as non-negotiable: copy them verbatim into "Critical Context"; never rewrite, translate, or drop them.',
-
-    '- If the conversation is long, prefer preserving decisions, constraints, unresolved questions, exact identifiers, and user corrections over narrative detail.',
-
-    '- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts and exact-value ledger entries, drop stale ones, and merge newer information into one consolidated summary.',
-
-    '- Never record statements from the assistant about its remaining context, token pressure, compaction need, or the belief that context is almost full; those are not facts and must not survive into future checkpoints.',
-
-    '- This applies to every role: user, operator, or assistant; only host/provider usage measurements are authoritative.',
-
-    '- If the user explicitly asks to stop or compact, record that instruction verbatim, but never record the asserted context usage as fact.',
-
-    `- ${acknowledgmentRule}`,
-
-    '- Output only the checkpoint text: do not call any tool or take any other action.',
-
-    '',
-
-    brief ? `<compaction_fidelity_project_brief>\n${clampText(brief, 3000)}\n</compaction_fidelity_project_brief>` : '',
-
-    anchors ? `<compaction_fidelity_anchors>\n${clampText(anchors, 3000)}\n</compaction_fidelity_anchors>` : '',
-
-    ledgerText ? `<exact_value_ledger>\n${ledgerText}\n</exact_value_ledger>` : '',
-
-    (ledger?.userQuotes?.length ?? 0) > 0 ? `<verbatim_user_input>\n${clampText((ledger.userQuotes ?? []).map((quote, index) => `[${index + 1}] ${quote}`).join('\n\n'), 7000)}\n</verbatim_user_input>` : '',
-
-    constraintsText ? `<pinned_constraints>\n${clampText(constraintsText, 2000)}\n</pinned_constraints>` : '',
-    architectureDocs ? `<architecture_retrieval_docs>\n${clampText(architectureDocs, 8000)}\n</architecture_retrieval_docs>` : '',
-    cognitionRefreshScopes.length > 0 ? `<cognition_refresh trigger="context_compaction">\n${clampText(cognitionRefreshScopes.map((scope) => `- ${scope}/ARCHITECTURE.md`).join('\n'), 1000)}\n压缩结束后请刷新这些 ARCHITECTURE.md；可调用 compaction-fidelity-architecture action=refresh 或执行 /compaction-fidelity architecture refresh <scope>。\n</cognition_refresh>` : '',
-  ].filter((part) => part.length > 0).join('\n');
-
+function summaryBlock(id, priority, text) {
+  return { id, priority, text };
 }
 
+function summaryInstructionParts({ ledger, brief, anchors, ledgerText, constraintsText, architectureDocs, cognitionRefreshScopes, structure, languageRule, acknowledgmentRule }) {
+  const fixedText = [
+    'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.',
+    '',
+    'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.',
+    '',
+    structure,
+    '',
+    'Rules:',
+    '',
+    `- ${languageRule}`,
+    '- The `exact_value_ledger` block below is generated deterministically from the original messages. Treat every entry as ground truth and copy it into the relevant section verbatim; never paraphrase or translate an exact value.',
+    '- `verbatim_user_input` contains the user’s own wording. Quote it verbatim where the exact wording matters; do not translate it.',
+    '- Capture user feedback and explicit instructions faithfully, especially corrections.',
+    '- Treat pinned_constraints as non-negotiable: copy them verbatim into "Critical Context"; never rewrite, translate, or drop them.',
+    '- If the conversation is long, prefer preserving decisions, constraints, unresolved questions, exact identifiers, and user corrections over narrative detail.',
+    '- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts and exact-value ledger entries, drop stale ones, and merge newer information into one consolidated summary.',
+    '- Never record statements from the assistant about its remaining context, token pressure, compaction need, or the belief that context is almost full; those are not facts and must not survive into future checkpoints.',
+    '- This applies to every role: user, operator, or assistant; only host/provider usage measurements are authoritative.',
+    '- If the user explicitly asks to stop or compact, record that instruction verbatim, but never record the asserted context usage as fact.',
+    `- ${acknowledgmentRule}`,
+    '- Output only the checkpoint text: do not call any tool or take any other action.',
+  ].filter((part) => part.length > 0).join('\n');
+  const blocks = [
+    summaryBlock('project_brief', 3, brief ? `<compaction_fidelity_project_brief>\n${clampText(brief, 3000)}\n</compaction_fidelity_project_brief>` : ''),
+    summaryBlock('anchors', 3, anchors ? `<compaction_fidelity_anchors>\n${clampText(anchors, 3000)}\n</compaction_fidelity_anchors>` : ''),
+    summaryBlock('exact_value_ledger', 0, ledgerText ? `<exact_value_ledger>\n${ledgerText}\n</exact_value_ledger>` : ''),
+    summaryBlock('verbatim_user_input', 1, (ledger?.userQuotes?.length ?? 0) > 0 ? `<verbatim_user_input>\n${clampText((ledger.userQuotes ?? []).map((quote, index) => `[${index + 1}] ${quote}`).join('\n\n'), 7000)}\n</verbatim_user_input>` : ''),
+    summaryBlock('pinned_constraints', 0, constraintsText ? `<pinned_constraints>\n${clampText(constraintsText, 2000)}\n</pinned_constraints>` : ''),
+    summaryBlock('architecture_retrieval_docs', 2, architectureDocs ? `<architecture_retrieval_docs>\n${clampText(architectureDocs, 8000)}\n</architecture_retrieval_docs>` : ''),
+    summaryBlock('cognition_refresh', 4, cognitionRefreshScopes.length > 0 ? `<cognition_refresh trigger="context_compaction">\n${clampText(cognitionRefreshScopes.map((scope) => `- ${scope}/ARCHITECTURE.md`).join('\n'), 1000)}\n压缩结束后请刷新这些 ARCHITECTURE.md；可调用 compaction-fidelity-architecture action=refresh 或执行 /compaction-fidelity architecture refresh <scope>。\n</cognition_refresh>` : ''),
+  ].filter((block) => block.text.length > 0);
+  return { fixedText, blocks };
+}
 
+function completeBlocks(blocks) {
+  return blocks.filter((block) => !block.dropped).map((block) => block.final);
+}
 
+function fitsInjectionBudget(fixedText, blocks, maxTokens, maxChars) {
+  const finalBlocks = completeBlocks(blocks);
+  const chars = fixedText.length + finalBlocks.reduce((sum, text) => sum + text.length, 0);
+  const tokens = estimateTextTokens(fixedText) + finalBlocks.reduce((sum, text) => sum + estimateTextTokens(text), 0);
+  return tokens <= maxTokens && chars <= maxChars;
+}
 
+function injectionUsage(fixedText, blocks) {
+  const finalBlocks = completeBlocks(blocks);
+  return {
+    chars: fixedText.length + finalBlocks.reduce((sum, text) => sum + text.length, 0),
+    tokens: estimateTextTokens(fixedText) + finalBlocks.reduce((sum, text) => sum + estimateTextTokens(text), 0),
+    variableTokens: estimateTextTokens(finalBlocks.join('\n')),
+  };
+}
 
+function truncateInjectionBlock(text, tokenBudget, charBudget) {
+  if (tokenBudget <= 0 || charBudget <= 0) return '';
+  const marker = '\n...[truncated]';
+  let low = 0;
+  let high = text.length;
+  let best = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = text.slice(0, mid) + (mid < text.length ? marker : '');
+    if (estimateTextTokens(candidate) <= tokenBudget && candidate.length <= charBudget) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  if (best === 0) return '';
+  return text.slice(0, best) + (best < text.length ? marker : '');
+}
 
+function applyInjectionBudget({ fixedText, blocks, maxTokens, maxChars, reserveTokens }) {
+  const usableTokens = Math.max(0, maxTokens - reserveTokens - INJECTION_MARKER_RESERVE_TOKENS);
+  const usableChars = Math.max(0, maxChars - INJECTION_MARKER_RESERVE_CHARS);
+  const working = blocks.map((block) => ({ ...block, final: block.text, dropped: false }));
+  const droppedBlocks = [];
+  const truncatedBlocks = [];
+  const fits = () => fitsInjectionBudget(fixedText, working, usableTokens, usableChars);
+  for (const block of [...working].sort((left, right) => right.priority - left.priority || left.final.length - right.final.length)) {
+    if (fits()) break;
+    if (block.priority <= 0) continue;
+    block.dropped = true;
+    droppedBlocks.push(block.id);
+  }
+  const p0Blocks = working.filter((item) => !item.dropped && item.priority === 0);
+  let fairnessApplied = false;
+  if (!fits() && p0Blocks.length > 0) {
+    fairnessApplied = true;
+    let remainingTokens = Math.max(0, usableTokens - estimateTextTokens(fixedText));
+    let remainingChars = Math.max(0, usableChars - fixedText.length);
+    const ordered = [...p0Blocks].sort((left, right) => left.final.length - right.final.length);
+    for (let index = 0; index < ordered.length; index += 1) {
+      const block = ordered[index];
+      const remainingCount = ordered.length - index;
+      const shareTokens = Math.floor(remainingTokens / remainingCount);
+      const shareChars = Math.floor(remainingChars / remainingCount);
+      const next = truncateInjectionBlock(block.final, Math.max(0, shareTokens - 4), Math.max(0, shareChars - 16));
+      if (next.length < 48) {
+        block.dropped = true;
+        if (!droppedBlocks.includes(block.id)) droppedBlocks.push(block.id);
+        continue;
+      }
+      block.final = next;
+      truncatedBlocks.push({ name: block.id, originalChars: block.text.length, finalChars: next.length });
+      remainingTokens -= estimateTextTokens(next);
+      remainingChars -= next.length;
+    }
+  }
+  for (const block of working.filter((item) => !item.dropped && !(fairnessApplied && item.priority === 0)).sort((left, right) => right.priority - left.priority || left.final.length - right.final.length)) {
+    if (fits()) break;
+    const usage = injectionUsage(fixedText, working);
+    const overTokens = Math.max(0, usage.tokens - usableTokens);
+    const overChars = Math.max(0, usage.chars - usableChars);
+    const remainingTokens = Math.max(0, estimateTextTokens(block.final) - overTokens - 8);
+    const remainingChars = Math.max(0, block.final.length - overChars - 32);
+    const next = truncateInjectionBlock(block.final, remainingTokens, remainingChars);
+    if (next.length < 48) {
+      block.dropped = true;
+      if (!droppedBlocks.includes(block.id)) droppedBlocks.push(block.id);
+    } else {
+      block.final = next;
+      truncatedBlocks.push({ name: block.id, originalChars: block.text.length, finalChars: next.length });
+    }
+  }
+  let renderedFixed = fixedText;
+  if (!fitsInjectionBudget(renderedFixed, working, usableTokens, usableChars)) {
+    renderedFixed = truncateInjectionBlock(renderedFixed, usableTokens, usableChars);
+  }
+  const kept = working.filter((block) => !block.dropped);
+  let text = [renderedFixed, ...kept.map((block) => block.final)].filter((part) => part.length > 0).join('\n');
+  const truncated = droppedBlocks.length > 0 || truncatedBlocks.length > 0 || renderedFixed !== fixedText;
+  if (truncated) {
+    const dropped = droppedBlocks.length > 0 ? ` dropped="${droppedBlocks.length}"` : '';
+    const shortened = truncatedBlocks.length > 0 ? ` truncated="${truncatedBlocks.length}"` : '';
+    text += `\n<compaction_fidelity_injection_budget${dropped}${shortened} />`;
+  }
+  const diagnostics = {
+    maxTokens,
+    maxChars,
+    reserveTokens,
+    estimatedTokens: estimateTextTokens(text),
+    chars: text.length,
+    variableTokens: estimateTextTokens(kept.map((block) => block.final).join('\n')),
+    truncated,
+    droppedBlocks,
+    truncatedBlocks,
+  };
+  return { text, diagnostics };
+}
 
+export function buildSummaryInstructionWithDiagnostics({
+  language = 'auto',
+  ledger,
+  brief = '',
+  anchors = '',
+  constraints = [],
+  architectureDocs = '',
+  cognitionRefreshScopes = [],
+  maxChars = 24000,
+  maxTokens = DEFAULT_INJECTION_MAX_TOKENS,
+  reserveTokens = 0,
+} = {}) {
+  const resolvedLanguage = language === 'auto' ? (ledger?.language === 'zh' ? 'zh' : ledger?.language === 'mixed' ? 'bilingual' : 'en') : language;
+  const headings = languageHeadings(resolvedLanguage === 'mixed' ? 'bilingual' : resolvedLanguage);
+  const structure = headings.sections.map(([heading, hint]) => `## ${heading}\n- [${hint}]`).join('\n\n');
+  const ledgerText = clampText(JSON.stringify({
+    language: ledger?.language ?? 'unknown',
+    user_quotes: ledger?.userQuotes ?? [],
+    user_corrections: ledger?.corrections ?? [],
+    exact_paths: ledger?.paths ?? [],
+    exact_commands: ledger?.commands ?? [],
+    errors: ledger?.errors ?? [],
+    identifiers: ledger?.identifiers ?? [],
+    numbers: ledger?.numbers ?? [],
+  }, null, 2), 9000);
+  const constraintsText = (constraints ?? []).map((item, index) => "- [" + index + "] " + (item.text ?? item)).join("\n");
+  const languageRule = resolvedLanguage === 'zh'
+    ? '使用中文撰写检查点；所有路径、命令、错误串、标识符、数值必须原样保留，禁止翻译。'
+    : resolvedLanguage === 'bilingual'
+      ? 'Write the main prose in English; add concise Chinese notes for user-facing constraints. Preserve exact values verbatim.'
+      : 'Write concise English engineering prose. The `verbatim_user_input` and `exact_value_ledger` entries MUST stay in their original language and MUST NOT be translated.';
+  const acknowledgmentRule = 'This checkpoint is a lossy index, not a complete transcript. If a required fact is missing or uncertain, say so in "Critical Context"/"Compaction-Fidelity Anchors" and retrieve it with the available retrieval tools instead of guessing. Architecture facts are only locators here: after resuming, re-read `.dsh/compaction-fidelity/project.txt` and `.dsh/compaction-fidelity/PROJECT.md` before relying on them as ground truth.';
+  const { fixedText, blocks } = summaryInstructionParts({
+    ledger, brief, anchors, ledgerText, constraintsText, architectureDocs, cognitionRefreshScopes, structure, languageRule, acknowledgmentRule,
+  });
+  return applyInjectionBudget({ fixedText, blocks, maxTokens, maxChars, reserveTokens });
+}
 
+export function buildSummaryInstruction(options = {}) {
+  return buildSummaryInstructionWithDiagnostics(options).text;
+}
