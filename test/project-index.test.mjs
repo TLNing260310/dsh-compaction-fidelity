@@ -78,6 +78,49 @@ test('builds a persistent Compaction-Fidelity index, anchors, brief, search, and
 });
 
 
+test("cached retrieval artifacts are invalidated when the read policy changes", () => {
+  const policyRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-cache-policy-"));
+  try {
+    writeFileSync(join(policyRoot, "app.ts"), "export const app = 1;\n", "utf8");
+    const localIndexDir = ".dsh/compaction-fidelity";
+    const options = { indexDir: localIndexDir, scopeFingerprint: "policy-a", expectedFingerprint: "policy-a" };
+    buildIndex(policyRoot, options);
+    assert.match(readFileSync(join(policyRoot, localIndexDir, "retrieval-scope.json"), "utf8"), /policy-a/);
+    assert.notEqual(loadIndex(policyRoot, options), null);
+    assert.match(briefForRoot(policyRoot, options) ?? "", /Compaction-Fidelity Project Brief/);
+
+    // A tightened policy must never be served the artifact built under the old one.
+    const tightened = { indexDir: localIndexDir, expectedFingerprint: "policy-b" };
+    assert.equal(loadIndex(policyRoot, tightened), null);
+    assert.equal(briefForRoot(policyRoot, tightened), null);
+    assert.equal(anchorsForFile(policyRoot, localIndexDir, "app.ts", 8, { expectedFingerprint: "policy-b" }), null);
+    assert.equal(verifyIndex(policyRoot, tightened).ok, false);
+    assert.equal(updateAnchorsForFiles(policyRoot, localIndexDir, ["app.ts"], { anchorsPerFile: 8, expectedFingerprint: "policy-b" }), null);
+
+    // Rebuilding under the new policy makes the artifacts servable again.
+    buildIndex(policyRoot, { ...tightened, scopeFingerprint: "policy-b" });
+    assert.notEqual(loadIndex(policyRoot, tightened), null);
+  } finally {
+    rmSync(policyRoot, { recursive: true, force: true });
+  }
+});
+
+test("purge refuses a directory the plugin does not manage", () => {
+  const purgeRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-purge-"));
+  try {
+    mkdirSync(join(purgeRoot, "notes"), { recursive: true });
+    writeFileSync(join(purgeRoot, "notes", "keep.txt"), "keep", "utf8");
+    assert.throws(() => purgeIndex(purgeRoot, "notes"), /does not look like/);
+    assert.equal(readFileSync(join(purgeRoot, "notes", "keep.txt"), "utf8"), "keep");
+
+    mkdirSync(join(purgeRoot, ".dsh", "compaction-fidelity"), { recursive: true });
+    writeFileSync(join(purgeRoot, ".dsh", "compaction-fidelity", "index.json"), "{}", "utf8");
+    assert.ok(purgeIndex(purgeRoot, ".dsh/compaction-fidelity").includes("compaction-fidelity"));
+  } finally {
+    rmSync(purgeRoot, { recursive: true, force: true });
+  }
+});
+
 test('rejects a linked parent for index writes and purge', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-index-link-'));
   const outside = mkdtempSync(join(tmpdir(), 'compaction-fidelity-index-outside-'));

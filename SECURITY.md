@@ -39,11 +39,28 @@ Do not include live tokens, credentials, or private repository contents in publi
 
 - No eval or independent runtime network client was found in the plugin modules; model calls go through DSH's LLM service.
 - The install and patch scripts use child_process for fixed local package-manager and DSH operations.
-- Index scanning is bounded by max file count and max file size and runs outside the critical token path.
-- The pre-step pressure check and architecture prompt are best-effort and never replace the official overflow recovery.
+- Index scanning is bounded by max file count and max file size. A queued build is deferred with a timer, but the scan itself is synchronous and can still block the host event loop on a very large workspace; time, directory-count, and total-byte budgets are not yet complete.
+- The pre-step architecture prompt is best-effort: it runs after the host decision, is wrapped in its own error boundary, re-checks cancellation before every write, and returns the original decision on failure. Cancellation of a pressure compaction now propagates instead of falling back to official compaction.
+- Managed-scope rules act as a read policy. A registry that cannot be honored denies retrieval instead of degrading to "no rules", and cached index, brief, and anchor artifacts record the policy they were built under so a rule change invalidates them.
+- The architecture baseline store is written through the same workspace containment check and lock/compare-and-swap helper as the other architecture artifacts.
+- Constraints are resolved newest-first with explicit retraction and supersession, so a rule the user withdrew is not re-pinned after a compaction.
+- Folder mentions are not write consent. Selecting a scope and authorising creation are separate states, and the decision lives in a host-free module with unit tests.
+- `purgeIndex --yes` only deletes directories that carry plugin-managed index markers.
 
 - Threshold compaction uses a per-session in-flight guard to avoid overlapping pressure transactions.
 - Architecture prompts are scoped to the current session and the prompt cache is bounded.
+
+## Known gaps
+
+These are documented limitations, not protections. Do not read them as guarantees.
+
+- Git-backed change detection compares against `HEAD`, so a file left uncommitted at refresh time can keep reporting as stale, and a Git failure is folded into an empty result instead of an explicit `unknown` state.
+- Change detection scans synchronously inside a deferred callback and lacks complete file, directory, byte, and time budgets; architecture documents are read in full before the output is trimmed.
+- `scripts/install-desktop.mjs` rollback covers package staging and removal, not the Profile rewrite, dependency linking, verification, and enable steps.
+- Threshold and UI settings are process-global; they are not per-session or per-workspace.
+- Token budgets are estimates. Oversized strings are trimmed by character count, which can cut a label, exact value, or constraint in half.
+- Architecture attestation is a content-consistency check, not proof that a document is authoritative.
+- The calibration store and imported calibration JSON are not field-whitelisted.
 
 ## Out of scope
 

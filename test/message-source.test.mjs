@@ -43,7 +43,11 @@ test('no src module builds a plugin message source by hand any more', () => {
 test('the injection sites reference the shared constant', () => {
   const index = readFileSync(join(srcDir, 'index.mjs'), 'utf8');
   const uses = index.match(/source:\s*PRODUCER_SOURCE/g) ?? [];
-  assert.equal(uses.length, 4);
+  const messages = index.match(/createUserMessage\(/g) ?? [];
+  // Every plugin-authored message must declare the shared producer source, so
+  // the two counts stay equal as new injection sites are added.
+  assert.ok(messages.length >= 4, `expected at least 4 injected messages, got ${messages.length}`);
+  assert.equal(uses.length, messages.length);
   assert.match(index, /import \{ PLUGIN_NAME, PRODUCER_SOURCE \} from '\.\/message-source\.mjs'/);
 });
 

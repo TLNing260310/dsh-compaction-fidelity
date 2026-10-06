@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
-import { architectureHash, atomicWriteArchitectureFile } from "./architecture-io.mjs";
+import { architectureHash, assertWorkspaceContained, mutateArchitectureDocument } from "./architecture-io.mjs";
 import { countChangedFilesSince } from "./architecture-doc.mjs";
 import { buildIndex, isSensitiveIndexPath } from "./project-index.mjs";
 
@@ -141,31 +141,65 @@ function baselinePath(cwd, indexDir) {
   return join(cwd, indexDir, BASELINE_FILE);
 }
 
-function readBaselineStore(cwd, indexDir) {
+/**
+ * Parse a baseline store. Returns null when the store exists but cannot be
+ * honored, so callers can tell "no baseline yet" apart from "unreadable".
+ */
+function parseBaselineStore(text) {
+  if (text === null || text.trim().length === 0) return { version: 1, scopes: {} };
   try {
-    const file = baselinePath(cwd, indexDir);
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
-    if (parsed !== null && typeof parsed === "object" && parsed.scopes !== null && typeof parsed.scopes === "object") return parsed;
+    const parsed = JSON.parse(text);
+    if (parsed !== null && typeof parsed === "object" && parsed.scopes !== null && typeof parsed.scopes === "object" && !Array.isArray(parsed.scopes)) return parsed;
   } catch {
-    // missing or invalid baseline is treated as no baseline
+    // reported as unreadable below
   }
-  return { version: 1, scopes: {} };
+  return null;
 }
 
-function writeBaselineStore(cwd, indexDir, store) {
-  atomicWriteArchitectureFile(baselinePath(cwd, indexDir), JSON.stringify(store, null, 2));
+/**
+ * Read the baseline store through the shared workspace containment check. The
+ * baseline is derived state that lives inside the plugin index directory, so a
+ * `.dsh` junction pointing outside the workspace must not be followed. An
+ * unusable store returns null and detectSemanticChanges falls back to its
+ * conservative mtime mode instead of trusting foreign content.
+ */
+function readBaselineStore(cwd, indexDir) {
+  const file = baselinePath(cwd, indexDir);
+  try {
+    assertWorkspaceContained(cwd, file);
+  } catch {
+    return null;
+  }
+  try {
+    if (!existsSync(file)) return { version: 1, scopes: {} };
+    return parseBaselineStore(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 export function readArchitectureBaseline(cwd, scope, indexDir = ".dsh/compaction-fidelity") {
   const store = readBaselineStore(cwd, indexDir);
+  if (store === null) return null;
   const entry = store.scopes[normalizeRel(scope)] ?? store.scopes[scope];
   return entry !== null && typeof entry === "object" ? entry : null;
 }
 
+/**
+ * Write one scope's baseline entry. The store is guarded by the same
+ * containment check and lock/CAS helper as every other architecture artifact,
+ * so a linked index directory is rejected and two processes refreshing
+ * different scopes cannot drop each other's entries via read-modify-write.
+ */
 export function writeArchitectureBaseline(cwd, scope, baseline, indexDir = ".dsh/compaction-fidelity") {
-  const store = readBaselineStore(cwd, indexDir);
-  store.scopes[normalizeRel(scope)] = baseline;
-  writeBaselineStore(cwd, indexDir, store);
+  const file = baselinePath(cwd, indexDir);
+  assertWorkspaceContained(cwd, file);
+  const key = normalizeRel(scope);
+  return mutateArchitectureDocument(file, (text) => {
+    const store = parseBaselineStore(text) ?? { version: 1, scopes: {} };
+    store.scopes[key] = baseline;
+    return JSON.stringify(store, null, 2) + "\n";
+  });
 }
 
 /**

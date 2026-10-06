@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+Post-audit hardening on top of 0.3.1. This section implies no version bump, tag, or publication.
+
+### Read policy is fail-closed
+
+- Split the managed-scope registry read into `missing`, `valid`, and `corrupt`. A registry that cannot be honored no longer degrades to "no rules"; it denies every read, index write, cache hit, and injection target instead, and it can no longer be silently rewritten by a rule update.
+- Added a workspace-wide filter so a rule registered for one sub-scope also constrains the root index, brief, anchors, and search results.
+- Cached retrieval artifacts record the read policy they were built under, so a rule change or a corrupt registry invalidates `index.json`, `PROJECT.md`, and `anchors.json` instead of serving content the current rules no longer allow.
+- Routed every retrieval entry point through that policy: brief and lookup tools, `verify`, `anchors`, `brief`, `reindex`, background indexing, anchor injection, and the engine's summary-context lookup.
+
+### Architecture baseline
+
+- The baseline store is written through the shared workspace containment check plus the lock/compare-and-swap helper, so a linked `indexDir` can no longer be written through and two processes refreshing different scopes cannot drop each other's entries.
+
+### Constraints
+
+- Constraints carry provenance (message index, ordinal, timestamp) and are selected newest-first, so the newest rules survive the cap instead of the oldest.
+- Withdrawals ("不再需要…", "ignore the previous…", "instead use…") and same-object reversals mark older rules as retracted or superseded. Retired rules are excluded from verdicts, so a rule the user withdrew can no longer be re-pinned as non-negotiable after a compaction.
+
+### Pre-step safety
+
+- A cancelled or rejected step returns the original decision before any architecture work runs, every architecture write re-checks cancellation, and the branch is wrapped in its own error boundary so a helper failure cannot break the agent step.
+- Folder mentions no longer authorise writes: selecting a scope and authorising creation are separate states, "不要创建 src，先检查它" is recognised as a refusal, and the decision lives in the host-free `src/step-policy.mjs` with its own tests.
+
+### Purge ownership
+
+- `purgeIndex` refuses to delete a directory that does not carry plugin-managed index markers.
+
+### Diagnostics
+
+- The fidelity gate now fails on probe recall, so a high recall fingerprint can no longer mask a summary that dropped every probed value; `probes` is reported with the other thresholds.
+- Raw model output and the delivered summary are evaluated separately, and constraints are re-evaluated after compensation, instead of pairing a raw fingerprint with post-compensation constraints.
+- Cancellation is no longer treated as a fallback condition: an aborted pressure compaction rethrows instead of continuing into official compaction.
+
+### Verification in this round
+
+- `npm run check` passes. The full suite is 132 tests: 127 pass, 0 fail, 5 environment-dependent skips (the DSH peer modules are not installed in this checkout).
+- Still open from the audit, and not claimed as fixed: Git-backed change detection still compares against `HEAD` rather than the refresh snapshot and has no explicit `unknown` state; index scanning is still synchronous with incomplete time and directory budgets; `install-desktop.mjs` rollback still covers only the pre-Profile half; configuration is still process-global; calibration import still lacks a field whitelist.
+- No real-model paired evaluation, Desktop end-to-end upgrade, npm publication, or "leading among peers" claim is made here.
+
 ## 0.3.1
 
 Hardening release on top of the published 0.3.0 tag. The `v0.3.0` tag remains unchanged.
@@ -32,8 +73,6 @@ Hardening release on top of the published 0.3.0 tag. The `v0.3.0` tag remains un
 - Local tarball smoke in a temporary `DSH_HOME`: a custom profile created from the shipped web template installed `dsh-compaction-fidelity-0.3.1.tgz`, and `dsh --profile smoke --dump-config` exited 0 with the `compaction-fidelity` engine row present. Desktop preset replacement remains verified only through the app-closed Desktop profile path.
 - npm publication and real three-backend paired evaluation remain pending and are not claimed.
 
-- Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.
-- Recorded the isolated Profile smoke result: local 0.3.0 install, config composition, installed compression smoke with mock LLM, master-switch disable check, removal, and restart-config check passed; the running daily Desktop profile remains on 1.25 until it is closed.
 - Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.
 - Recorded the isolated Profile smoke result: local 0.3.0 install, config composition, installed compression smoke with mock LLM, master-switch disable check, removal, and restart-config check passed; the running daily Desktop profile remains on 1.25 until it is closed.
 

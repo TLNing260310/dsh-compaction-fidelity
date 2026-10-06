@@ -1,9 +1,9 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeArchitectureBaseline, detectSemanticChanges, gitRepoCacheSize, isGitRepository, resetGitRepoCache, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
+import { computeArchitectureBaseline, detectSemanticChanges, gitRepoCacheSize, isGitRepository, readArchitectureBaseline, resetGitRepoCache, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-changes-"));
 const options = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 20000, maxFileBytes: 1024 * 1024 };
@@ -78,6 +78,56 @@ test("hash mode honors size and sensitive-file filters", () => {
     assert.equal(change.incomplete, true);
     assert.ok(!change.changedFiles.includes("large.json"));
     assert.ok(!change.changedFiles.includes("secrets.json"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("baseline writes reject a linked index directory instead of escaping the workspace", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-baseline-link-"));
+  const outside = mkdtempSync(join(tmpdir(), "compaction-fidelity-baseline-outside-"));
+  try {
+    const localOptions = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 100, maxFileBytes: 1024 * 1024 };
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "app.ts"), "export const app = 1;\n", "utf8");
+    try {
+      symlinkSync(outside, join(cwd, ".dsh"), process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (error.code === "EPERM" || error.code === "EACCES") {
+        t.skip("symlink creation is not permitted on this platform");
+        return;
+      }
+      throw error;
+    }
+    assert.throws(
+      () => writeArchitectureBaseline(cwd, ".", computeArchitectureBaseline(cwd, ".", localOptions), localOptions.indexDir),
+      /symbolic link|junction|escapes workspace/,
+    );
+    assert.equal(existsSync(join(outside, "compaction-fidelity", "architecture-baseline.json")), false);
+    assert.equal(readArchitectureBaseline(cwd, ".", localOptions.indexDir), null);
+    assert.equal(detectSemanticChanges(cwd, ".", localOptions).baselineFound, false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("baseline writes merge per-scope entries and leave no lock or temp files", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-baseline-merge-"));
+  try {
+    const localOptions = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 100, maxFileBytes: 1024 * 1024 };
+    mkdirSync(join(cwd, "src", "a"), { recursive: true });
+    mkdirSync(join(cwd, "src", "b"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a", "a.ts"), "export const a = 1;\n", "utf8");
+    writeFileSync(join(cwd, "src", "b", "b.ts"), "export const b = 1;\n", "utf8");
+    writeArchitectureBaseline(cwd, "src/a", computeArchitectureBaseline(cwd, "src/a", localOptions), localOptions.indexDir);
+    writeArchitectureBaseline(cwd, "src/b", computeArchitectureBaseline(cwd, "src/b", localOptions), localOptions.indexDir);
+    const storePath = join(cwd, localOptions.indexDir, "architecture-baseline.json");
+    const store = JSON.parse(readFileSync(storePath, "utf8"));
+    assert.deepEqual(Object.keys(store.scopes).sort(), ["src/a", "src/b"]);
+    assert.notEqual(readArchitectureBaseline(cwd, "src/a", localOptions.indexDir), null);
+    assert.equal(existsSync(storePath + ".lock"), false);
+    assert.deepEqual(readdirSync(join(cwd, localOptions.indexDir)).filter((name) => name.includes(".tmp-")), []);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

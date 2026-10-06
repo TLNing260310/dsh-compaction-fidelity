@@ -43,6 +43,31 @@ function createContext(apply, config = {}) {
 const agentFor = (cwd, id) => ({ session: { id, header: { cwd } } });
 const decisionWith = (text) => ({ messages: [{ role: 'user', content: [{ type: 'text', text }] }] });
 
+test('pre-step guards cancellation and isolates helper failures', () => {
+  const source = readFileSync(sourcePath, 'utf8');
+  const nextIndex = source.indexOf('const decision = await next();');
+  assert.ok(nextIndex >= 0, 'pre-step decision await not found');
+  const guardIndex = source.indexOf('if (preStepStopped(signal, decision)) return decision;', nextIndex);
+  assert.ok(guardIndex > nextIndex, 'the cancellation guard must follow next()');
+  assert.ok(guardIndex - nextIndex < 400, 'the cancellation guard must not sit behind the architecture branch');
+
+  const createIndex = source.indexOf('const created = createArchitectureDocument(askedCwd, scope);');
+  assert.ok(createIndex > 0, 'document creation call not found');
+  const createGuard = source.lastIndexOf('if (preStepStopped(signal, decision)) return decision;', createIndex);
+  assert.ok(createGuard > guardIndex && createGuard < createIndex, 'creating a document must re-check cancellation');
+
+  const reminderIndex = source.indexOf('mutateReminderState(askedCwd, cfg.indexDir,');
+  assert.ok(reminderIndex > 0, 'reminder mutation call not found');
+  const reminderGuard = source.lastIndexOf('if (preStepStopped(signal, decision)) return decision;', reminderIndex);
+  assert.ok(reminderGuard > createIndex && reminderGuard < reminderIndex, 'reminder bookkeeping must re-check cancellation');
+
+  const branchIndex = source.indexOf('if (cfg.architectureDoc && getGlobalState()?.enabled !== false && !isMasterDisabled()) {');
+  const tryIndex = source.indexOf('try {', branchIndex);
+  assert.ok(tryIndex > branchIndex, 'the architecture branch must be wrapped for isolation');
+  assert.ok(source.includes('architecture pre-step failed'), 'helper failures must be logged, not thrown');
+  assert.ok(source.includes('readArchitectureConsent(pending, last)'), 'consent must come from the policy module');
+});
+
 test('pre-step scope adoption never references a block-local target', () => {
   const source = readFileSync(sourcePath, 'utf8');
   const start = source.indexOf('const detection = detectTaskFolders');

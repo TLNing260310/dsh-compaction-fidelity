@@ -13,7 +13,7 @@ import { buildFidelitySample, calibrateFidelityLevel, recordFidelitySample } fro
 import { buildFidelityProbes, evaluateFidelityGate } from './fidelity-gate.mjs';
 import { aggregateComparison as storedComparison, aggregateConstraints as storedConstraints, aggregateGate as storedGate } from './fingerprint-privacy.mjs';
 import { readArchitectureDoc } from './architecture-doc.mjs';
-import { managedDocTarget, readArchitectureRegistry } from './architecture-registry.mjs';
+import { managedDocTarget, readArchitectureRegistry, retrievalPolicyFor } from './architecture-registry.mjs';
 import { assertWorkspaceContained } from './architecture-io.mjs';
 import { pickRetentionRange } from './range.mjs';
 import { mergeRuntimeState, normalizeThreshold, resolveAbsoluteThresholdPlan, resolveThresholdPlan } from './state.mjs';
@@ -33,6 +33,15 @@ function estimateToolsTokensForHeader(header) {
   const tools = header?.tools;
   if (!Array.isArray(tools) || tools.length === 0) return 0;
   return Math.ceil(JSON.stringify(tools).length / 4) + 4;
+}
+
+/**
+ * Cancellation must terminate the operation. It is never a fallback condition:
+ * treating an abort as "the plugin failed" would keep working after the caller
+ * cancelled the step.
+ */
+function isCancellation(signal, error) {
+  return signal?.aborted === true || error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
 }
 
 function routedTarget(session) {
@@ -289,6 +298,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
       );
       if (result !== null) return result;
     } catch (error) {
+      if (isCancellation(signal, error)) throw error;
       this.ctx.logger?.warn?.(
         `compaction-fidelity absolute-threshold compaction failed: ${error instanceof Error ? error.message : String(error)}; falling back to official compaction`,
       );
@@ -454,7 +464,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     try {
       return await this.summarizeFidelity(input, agent, signal, runtime);
     } catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') throw error;
+      if (isCancellation(signal, error)) throw error;
       this.ctx.logger?.warn?.(`compaction-fidelity summary failed: ${error instanceof Error ? error.message : String(error)}; falling back to official summary`);
       return super.summarize(input, agent, signal);
     }
@@ -481,12 +491,15 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     let anchorText = '';
     if (runtime.anchors) {
       try {
-        const index = loadIndex(cwd, runtime.indexDir);
+        const policy = retrievalPolicyFor(cwd, runtime.indexDir);
+        if (policy.blocked) throw new Error('the managed scope registry cannot be read; retrieval is blocked until it is repaired');
+        const readOptions = { indexDir: runtime.indexDir, expectedFingerprint: policy.fingerprint };
+        const index = loadIndex(cwd, readOptions);
         if (index !== null) {
-          brief = clampText(briefForRoot(cwd, runtime.indexDir) ?? index.brief ?? '', 3000);
+          brief = clampText(briefForRoot(cwd, readOptions) ?? index.brief ?? '', 3000);
           const lines = [];
           for (const file of referencedFiles.slice(0, 12)) {
-            const anchors = anchorsForFile(cwd, runtime.indexDir, file, this.fidelityConfig.anchorsPerFile);
+            const anchors = anchorsForFile(cwd, runtime.indexDir, file, this.fidelityConfig.anchorsPerFile, { expectedFingerprint: policy.fingerprint });
             if (anchors === null || anchors.length === 0) continue;
             lines.push(`- ${file}`);
             for (const anchor of anchors) lines.push(`  - [${anchor.kind}${Number.isFinite(anchor.quality) ? ` q${anchor.quality}` : ''}] ${anchor.path} — ${anchor.reason}`);
@@ -494,7 +507,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
           anchorText = lines.join('\n');
         }
         if (referencedFiles.length > 0) {
-          updateAnchorsForFiles(cwd, runtime.indexDir, referencedFiles.slice(0, 24), { anchorsPerFile: this.fidelityConfig.anchorsPerFile });
+          updateAnchorsForFiles(cwd, runtime.indexDir, referencedFiles.slice(0, 24), { anchorsPerFile: this.fidelityConfig.anchorsPerFile, expectedFingerprint: policy.fingerprint });
         }
       } catch (error) {
         this.ctx.logger?.warn?.(`compaction-fidelity anchor lookup failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -619,9 +632,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     if (!summary.some((block) => block.text.trim().length > 0)) throw new Error('compaction-fidelity summarization produced no text summary content');
     const postFingerprint = buildFingerprint([{ role: 'assistant', content: summary.map((block) => ({ type: 'text', text: block.text })) }]);
     const fidelity = compareFingerprints(preFingerprint, postFingerprint);
-    const summaryPlain = summary.map((block) => block.text).join("\n");
-    const constraintComparison = compareConstraintLedger(constraintLedger, summaryPlain);
-    const pinned = constraintComparison.verdicts.filter((verdict) => verdict.verdict !== "preserved");
+    // Raw snapshot: what the model produced on its own, before compensation and
+    // before un-preserved constraints are re-injected.
+    const rawSummaryText = summary.map((block) => block.text).join("\n");
+    const rawConstraintComparison = compareConstraintLedger(constraintLedger, rawSummaryText);
+    const pinned = rawConstraintComparison.verdicts.filter((verdict) => verdict.verdict !== "preserved");
     const pinnedText = pinned.map((verdict, index) => "- [" + (index + 1) + "] " + verdict.text).join("\n");
     const postInjectionBudget = Math.max(0, injectionBudget - instructionResult.diagnostics.estimatedTokens);
     const pinnedBlockOpen = "<pinned_constraints>\n";
@@ -646,10 +661,19 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         summary.push({ type: 'text', text: pinnedBlockOpen + cappedPinnedText + pinnedBlockClose });
       }
     }
-    const gate = evaluateFidelityGate({ fingerprint: fidelity, constraints: constraintLedger, probes: buildFidelityProbes(preFingerprint), summaryText: summary.map((block) => block.text).join("\n") });
-    if (!gate.ok) this.ctx.logger?.warn?.("compaction-fidelity gate: " + gate.failures.join(", "));
+    // Final snapshot: the summary actually delivered to the session. Constraints
+    // are evaluated again after compensation, so a raw fingerprint is never
+    // reported next to post-compensation constraints. The gate stays a
+    // diagnostic: it is logged for calibration and never rewrites the summary.
     const finalFingerprint = buildFingerprint([{ role: "assistant", content: summary.map((block) => ({ type: "text", text: block.text })) }]);
     const finalFidelity = compareFingerprints(preFingerprint, finalFingerprint);
+    const deliveredSummaryText = summary.map((block) => block.text).join("\n");
+    const finalConstraintComparison = compareConstraintLedger(constraintLedger, deliveredSummaryText);
+    const probes = buildFidelityProbes(preFingerprint);
+    const rawGate = evaluateFidelityGate({ fingerprint: fidelity, constraints: constraintLedger, probes, summaryText: rawSummaryText });
+    const finalGate = evaluateFidelityGate({ fingerprint: finalFidelity, constraints: constraintLedger, probes, summaryText: deliveredSummaryText });
+    if (!rawGate.ok) this.ctx.logger?.warn?.("compaction-fidelity raw gate: " + rawGate.failures.join(", "));
+    if (!finalGate.ok) this.ctx.logger?.warn?.("compaction-fidelity final gate: " + finalGate.failures.join(", "));
     const anchorQuality = {
       files: referencedFiles.length,
       entries: (anchorText.match(/^  - /gm) ?? []).length,
@@ -662,7 +686,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         rawComparison: fidelity,
         finalComparison: finalFidelity,
         compensation,
-        constraintComparison,
+        constraintComparison: finalConstraintComparison,
         anchorQuality,
         preFingerprint,
       });
@@ -672,7 +696,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     } catch (error) {
       this.ctx.logger?.warn?.("compaction-fidelity calibration failed: " + (error instanceof Error ? error.message : String(error)));
     }
-    await this.persistFingerprint(agent, preFingerprint, postFingerprint, fidelity, runtime.indexDir, compensation, gate, constraintComparison, calibration);
+    await this.persistFingerprint(agent, preFingerprint, postFingerprint, fidelity, runtime.indexDir, compensation, finalGate, finalConstraintComparison, calibration);
     return {
       summary,
       rawOutput,

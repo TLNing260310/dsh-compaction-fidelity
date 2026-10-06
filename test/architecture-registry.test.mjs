@@ -7,10 +7,14 @@ import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBa
 import {
   globToRegExp,
   isValidScopePattern,
+  createGlobalWorkspaceFileFilter,
   createWorkspaceFileFilter,
   managedDocTarget,
+  managedScopeRules,
   matchesScopeRules,
   readArchitectureRegistry,
+  registryFingerprint,
+  retrievalPolicyFor,
   removeArchitectureScope,
   updateArchitectureScopeRules,
   writeArchitectureRegistry,
@@ -136,15 +140,24 @@ test("unsafe scopes and invalid patterns are rejected", () => {
   assert.equal(matchesScopeRules("src/a.ts", { include: ["../**"], exclude: [] }), false);
 });
 
-test("unsafe registry keys are ignored and rule lists are capped", () => {
+test("rule lists are capped and an unusable registry fails closed", () => {
   const securityRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-security-"));
   try {
+    const registryFile = join(securityRoot, indexDir, "architecture-scopes.json");
     mkdirSync(join(securityRoot, indexDir), { recursive: true });
-    writeFileSync(join(securityRoot, indexDir, "architecture-scopes.json"), JSON.stringify({ version: 2, scopes: { "../evil": { include: ["**"] }, safe: { include: [] } } }), "utf8");
-    let registry = readArchitectureRegistry(securityRoot, indexDir);
-    assert.equal(registry.scopes["../evil"], undefined);
-    assert.ok(registry.scopes.safe !== undefined);
 
+    // A scope name we cannot honor must not be silently dropped: dropping an
+    // entry widens reads relative to what the user asked for, so the whole
+    // registry becomes corrupt instead of degrading to "no rules".
+    writeFileSync(registryFile, JSON.stringify({ version: 2, scopes: { "../evil": { include: ["**"] }, safe: { include: [] } } }), "utf8");
+    let registry = readArchitectureRegistry(securityRoot, indexDir);
+    assert.equal(registry.status, "corrupt");
+    assert.deepEqual(registry.scopes, {});
+    assert.equal(createWorkspaceFileFilter(registry, "safe")("safe/a.ts"), false);
+    assert.equal(managedScopeRules(registry, "safe").denyAll, true);
+    assert.throws(() => updateArchitectureScopeRules(securityRoot, indexDir, "cap", { include: ["src/a.ts"] }), /corrupt/);
+
+    rmSync(registryFile, { force: true });
     const patterns = [];
     for (let index = 0; index < 200; index += 1) patterns.push("src/f" + index + ".ts");
     updateArchitectureScopeRules(securityRoot, indexDir, "cap", { include: patterns });
@@ -161,6 +174,108 @@ test("index wires managed filters and scheduling guards", () => {
   assert.match(source, /const cachedArchitectureChange =/);
   assert.match(source, /const MAX_SESSION_FILES = 64;/);
   assert.match(source, /architectureCheckCache\.clear\(\);/);
+});
+
+test("a missing registry stays permissive but a corrupt registry denies every read", () => {
+  const probeRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-corrupt-"));
+  try {
+    mkdirSync(join(probeRoot, indexDir), { recursive: true });
+    const missing = readArchitectureRegistry(probeRoot, indexDir);
+    assert.equal(missing.status, "missing");
+    assert.equal(createWorkspaceFileFilter(missing, "safe")("safe/a.ts"), true);
+    assert.equal(createGlobalWorkspaceFileFilter(missing)("safe/a.ts"), true);
+
+    const registryFile = join(probeRoot, indexDir, "architecture-scopes.json");
+    writeFileSync(registryFile, "{ \"version\": 2, \"scopes\": { \"safe\": { \"include\": [\"**\"] } }", "utf8");
+    const truncated = readArchitectureRegistry(probeRoot, indexDir);
+    assert.equal(truncated.status, "corrupt");
+    assert.equal(createWorkspaceFileFilter(truncated, "safe")("safe/a.ts"), false);
+    assert.equal(createGlobalWorkspaceFileFilter(truncated)("safe/a.ts"), false);
+    assert.equal(managedDocTarget(truncated, "safe"), null);
+
+    // A rule we cannot honor is not the same as no rule at all.
+    writeFileSync(registryFile, JSON.stringify({ version: 2, scopes: { "safe": { include: [], exclude: ["/etc/**"] } } }), "utf8");
+    const unusableExclude = readArchitectureRegistry(probeRoot, indexDir);
+    assert.equal(unusableExclude.status, "corrupt");
+    assert.equal(createWorkspaceFileFilter(unusableExclude, "safe")("safe/a.ts"), false);
+  } finally {
+    rmSync(probeRoot, { recursive: true, force: true });
+  }
+});
+
+test("the global filter applies every registered scope to workspace-relative paths", () => {
+  const registry = {
+    version: 2,
+    status: "valid",
+    scopes: {
+      "app": { include: [], exclude: ["secrets/**"] },
+      ".": { include: [], exclude: ["app/vendor/**"] },
+    },
+  };
+  const filter = createGlobalWorkspaceFileFilter(registry);
+  assert.equal(filter("app/src/a.ts"), true);
+  assert.equal(filter("app/secrets/token.txt"), false);
+  assert.equal(filter("app/vendor/lib.js"), false);
+  assert.equal(filter("other/src/a.ts"), true);
+  assert.equal(filter("../escape.ts"), false);
+});
+
+test("the registry fingerprint changes with rules and registry health", () => {
+  const base = { version: 2, status: "valid", scopes: { app: { include: [], exclude: ["secrets/**"] } } };
+  const same = { version: 2, status: "valid", scopes: { app: { include: [], exclude: ["secrets/**"] } } };
+  const widened = { version: 2, status: "valid", scopes: { app: { include: [], exclude: [] } } };
+  assert.equal(registryFingerprint(base), registryFingerprint(same));
+  assert.notEqual(registryFingerprint(base), registryFingerprint(widened));
+  assert.notEqual(registryFingerprint(base), registryFingerprint({ version: 2, status: "corrupt", scopes: {} }));
+  assert.notEqual(registryFingerprint(base), registryFingerprint({ version: 2, status: "missing", scopes: {} }));
+});
+
+test("the retrieval policy blocks serving when the registry cannot be honored", () => {
+  const policyRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-retrieval-policy-"));
+  try {
+    mkdirSync(join(policyRoot, indexDir), { recursive: true });
+    const missing = retrievalPolicyFor(policyRoot, indexDir);
+    assert.equal(missing.blocked, false);
+    assert.equal(missing.filterFile("app/a.ts"), true);
+    assert.equal(typeof missing.fingerprint, "string");
+
+    const registryFile = join(policyRoot, indexDir, "architecture-scopes.json");
+    writeFileSync(registryFile, "{ not json", "utf8");
+    const corrupt = retrievalPolicyFor(policyRoot, indexDir);
+    assert.equal(corrupt.blocked, true);
+    assert.equal(corrupt.filterFile("app/a.ts"), false);
+    assert.notEqual(corrupt.fingerprint, missing.fingerprint);
+
+    rmSync(registryFile, { force: true });
+    updateArchitectureScopeRules(policyRoot, indexDir, "app", { exclude: ["secrets/**"] });
+    const managed = retrievalPolicyFor(policyRoot, indexDir);
+    assert.equal(managed.blocked, false);
+    assert.equal(managed.filterFile("app/a.ts"), true);
+    assert.equal(managed.filterFile("app/secrets/token.ts"), false);
+    assert.notEqual(managed.fingerprint, missing.fingerprint);
+  } finally {
+    rmSync(policyRoot, { recursive: true, force: true });
+  }
+});
+
+test("a sub-scope exclusion also constrains the workspace index and its brief", () => {
+  const filterRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-global-filter-"));
+  try {
+    mkdirSync(join(filterRoot, "app", "secrets"), { recursive: true });
+    writeFileSync(join(filterRoot, "app", "index.ts"), "export const app = 1;\n", "utf8");
+    writeFileSync(join(filterRoot, "app", "secrets", "token.ts"), "export const token = 'x';\n", "utf8");
+    updateArchitectureScopeRules(filterRoot, indexDir, "app", { exclude: ["secrets/**"] });
+    const registry = readArchitectureRegistry(filterRoot, indexDir);
+    const filter = createGlobalWorkspaceFileFilter(registry);
+    assert.equal(filter("app/index.ts"), true);
+    assert.equal(filter("app/secrets/token.ts"), false);
+    const index = buildIndex(filterRoot, { indexDir, write: false, filterFile: filter });
+    assert.ok(index.files.some((file) => file.p === "app/index.ts"));
+    assert.equal(index.files.some((file) => file.p === "app/secrets/token.ts"), false);
+    assert.equal(index.brief.includes("token.ts"), false);
+  } finally {
+    rmSync(filterRoot, { recursive: true, force: true });
+  }
 });
 
 test("managed document targets respect custom names and exclusion rules", () => {

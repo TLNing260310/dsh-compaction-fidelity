@@ -35,13 +35,30 @@ export function evaluateFidelityProbes(probes, summaryText) {
   return { hits, total, ratio: total === 0 ? 1 : hits / total, byCategory, misses };
 }
 
+/**
+ * Diagnostic verdict for one summary snapshot. `fingerprint`, `probes`,
+ * `constraints` and `summaryText` must all describe the *same* text, so callers
+ * compare a raw model reply and the delivered summary separately instead of
+ * mixing a raw fingerprint with post-compensation constraints.
+ *
+ * The result is a diagnostic: a failed gate is logged for calibration, it does
+ * not by itself block or rewrite the summary.
+ */
 export function evaluateFidelityGate({ fingerprint, constraints, probes, summaryText, thresholds = {} }) {
-  const gate = { exactOverall: thresholds.exactOverall ?? 0.75, cjkRecall: thresholds.cjkRecall ?? 0.6, constraints: thresholds.constraints ?? 0.9 };
+  const gate = {
+    exactOverall: thresholds.exactOverall ?? 0.75,
+    cjkRecall: thresholds.cjkRecall ?? 0.6,
+    constraints: thresholds.constraints ?? 0.9,
+    probes: thresholds.probes ?? 0.75,
+  };
   const exact = evaluateFidelityProbes(probes ?? [], summaryText);
   const constraintResult = constraints ? compareConstraintLedger(constraints, summaryText) : { preservedRatio: 1, total: 0 };
   const failures = [];
   if (fingerprint && fingerprint.exactOverall < gate.exactOverall) failures.push("exactOverall<" + gate.exactOverall);
   if (fingerprint && fingerprint.cjkRecall < gate.cjkRecall) failures.push("cjkRecall<" + gate.cjkRecall);
+  // A high recall fingerprint only counts when the probes can still find the
+  // values, so a probe miss must be able to fail the gate on its own.
+  if (exact.total > 0 && exact.ratio < gate.probes) failures.push("probes<" + gate.probes);
   if (constraintResult.preservedRatio < gate.constraints) failures.push("constraints<" + gate.constraints);
   return { ok: failures.length === 0, thresholds: gate, exact, constraints: constraintResult, failures };
 }

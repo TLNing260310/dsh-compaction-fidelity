@@ -35,7 +35,8 @@ import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './archi
 import { architectureBaselineFromIndex, computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
-import { createWorkspaceFileFilter, isValidScopePattern, managedDocTarget, managedScopeRules, matchesScopeRules, readArchitectureRegistry, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, updateArchitectureScopeRules } from './architecture-registry.mjs';
+import { createGlobalWorkspaceFileFilter, createWorkspaceFileFilter, isValidScopePattern, managedDocTarget, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
+import { preStepStopped, readArchitectureConsent } from './step-policy.mjs';
 import { importFidelityCalibration, readFidelityCalibration, summarizeFidelityCalibration } from './fidelity-calibration.mjs';
 export const inject = ['commands', 'tools'];
 
@@ -131,6 +132,27 @@ export function apply(ctx, config = {}) {
     archFilesLimit: cfg.archFilesLimit,
     locale: getGlobalState()?.summaryLanguage ?? cfg.defaultSummaryLanguage ?? 'auto',
   };
+  /**
+   * Read policy shared by every retrieval entry point. A registry that cannot
+   * be honored blocks retrieval instead of falling back to unfiltered defaults,
+   * and a cached artifact built under different rules is never served: the
+   * rules may have been tightened since it was written.
+   */
+  const retrievalContext = (cwd) => {
+    const policy = retrievalPolicyFor(cwd, cfg.indexDir);
+    return {
+      blocked: policy.blocked,
+      policy,
+      options: {
+        ...indexOptions,
+        filterFile: policy.filterFile,
+        scopeFingerprint: policy.fingerprint,
+        expectedFingerprint: policy.fingerprint,
+      },
+    };
+  };
+  const RETRIEVAL_BLOCKED = 'Compaction-Fidelity retrieval is blocked because the managed scope registry cannot be read. Repair or remove '
+    + cfg.indexDir + '/architecture-scopes.json, then run /compaction-fidelity reindex.';
   const recentFiles = new Map();
   const MAX_SESSION_FILES = 64;
   const MAX_SESSION_MAPS = 200;
@@ -183,13 +205,18 @@ export function apply(ctx, config = {}) {
   const buildArchitectureIndex = (cwd, scope, { refresh = false } = {}) => {
     const normalizedScope = toPosix(String(scope ?? ".")).replace(/\/+$/, "");
     const registry = readArchitectureRegistry(cwd, cfg.indexDir);
-    const rules = managedScopeRules(registry, normalizedScope);
-    const filterFile = rules === null || rules === undefined ? undefined : (relativeFile) => matchesScopeRules(relativeFile, rules);
+    // The workspace index spans every sub-folder, so a rule registered for one
+    // sub-scope must also constrain root-level retrieval.
+    const workspaceFilter = createGlobalWorkspaceFileFilter(registry);
+    const fingerprint = registryFingerprint(registry);
     if (normalizedScope.length === 0 || normalizedScope === ".") {
-      const options = filterFile === undefined ? indexOptions : { ...indexOptions, filterFile };
+      const options = { ...indexOptions, filterFile: workspaceFilter, scopeFingerprint: fingerprint, expectedFingerprint: fingerprint };
       return refresh ? buildIndex(cwd, options) : ensureIndex(cwd, options);
     }
-    return buildIndex(join(cwd, normalizedScope), { ...indexOptions, write: false, ...(filterFile === undefined ? {} : { filterFile }) });
+    // walkWorkspace reports paths relative to the scope root, so compare the
+    // workspace-relative form when applying managed rules.
+    const filterFile = (relativeFile) => workspaceFilter(`${normalizedScope}/${relativeFile}`);
+    return buildIndex(join(cwd, normalizedScope), { ...indexOptions, write: false, filterFile });
   };
 
   const architectureScopes = new Map();
@@ -306,9 +333,11 @@ export function apply(ctx, config = {}) {
     if (lifecycleDisposed) return;
     const master = getGlobalState();
     if (!cfg.autoIndex || master?.enabled === false || isMasterDisabled() || cwd === undefined || cwd === null || queuedIndexes.has(cwd)) return;
+    const retrieval = retrievalContext(cwd);
+    if (retrieval.blocked) return;
     if (!force) {
       try {
-        if (loadIndex(cwd, cfg.indexDir) !== null) return;
+        if (loadIndex(cwd, retrieval.options) !== null) return;
       } catch {
         // fall through and build
       }
@@ -318,7 +347,7 @@ export function apply(ctx, config = {}) {
       queuedIndexTimers.delete(cwd);
       try {
         if (lifecycleDisposed || !cfg.autoIndex || getGlobalState()?.enabled === false || isMasterDisabled()) return;
-        buildIndex(cwd, indexOptions);
+        buildIndex(cwd, retrieval.options);
         ctx.logger?.info?.(`dsh-compaction-fidelity: Compaction-Fidelity index built for ${cwd}`);
       } catch (error) {
         ctx.logger?.warn?.(`dsh-compaction-fidelity: Compaction-Fidelity index build failed for ${cwd}: ${error instanceof Error ? error.message : String(error)}`);
@@ -343,9 +372,11 @@ export function apply(ctx, config = {}) {
       if (getGlobalState()?.enabled === false || isMasterDisabled()) {
         return { text: 'Compaction-Fidelity is temporarily disabled. Run /compaction-fidelity on to re-enable it.' };
       }
+      const retrieval = retrievalContext(cwd);
+      if (retrieval.blocked) return { text: RETRIEVAL_BLOCKED };
       try {
-        ensureIndex(cwd, indexOptions);
-        const brief = briefForRoot(cwd, cfg.indexDir);
+        ensureIndex(cwd, retrieval.options);
+        const brief = briefForRoot(cwd, retrieval.options);
         return { text: brief === null ? `No Compaction-Fidelity index at ${cwd}/${cfg.indexDir}; run /compaction-fidelity init.` : brief };
       } catch (error) {
         return { text: `Compaction-Fidelity brief failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -371,11 +402,13 @@ export function apply(ctx, config = {}) {
         return { text: 'Compaction-Fidelity is temporarily disabled. Run /compaction-fidelity on to re-enable it.' };
       }
       const limit = Number.isInteger(args.limit) && args.limit > 0 ? Math.min(args.limit, 50) : 8;
+      const retrieval = retrievalContext(cwd);
+      if (retrieval.blocked) return { text: RETRIEVAL_BLOCKED };
       try {
-        const index = ensureIndex(cwd, indexOptions);
+        const index = ensureIndex(cwd, retrieval.options);
         if (typeof args.file === 'string' && args.file.trim().length > 0) {
           const rel = toPosix(args.file.trim());
-          const anchors = anchorsForFile(cwd, cfg.indexDir, rel, limit) ?? [];
+          const anchors = anchorsForFile(cwd, cfg.indexDir, rel, limit, { expectedFingerprint: retrieval.policy.fingerprint }) ?? [];
           return { text: commandTextList([
             `Compaction-Fidelity lookup for ${rel}:`,
             formatAnchors(rel, anchors),
@@ -574,11 +607,15 @@ export function apply(ctx, config = {}) {
         }
         case 'init':
         case 'reindex': {
-          const index = buildIndex(cwd, indexOptions);
+          const retrieval = retrievalContext(cwd);
+          if (retrieval.blocked) return { kind: 'error', text: RETRIEVAL_BLOCKED };
+          const index = buildIndex(cwd, retrieval.options);
           return { kind: 'success', text: `Compaction-Fidelity 索引已重建：${index.stats.files} 文件，架构锚点 ${index.archFiles.length} 个，目录 ${cwd}/${cfg.indexDir}。` };
         }
         case 'verify': {
-          const result = verifyIndex(cwd, cfg.indexDir);
+          const retrieval = retrievalContext(cwd);
+          if (retrieval.blocked) return { kind: 'error', text: RETRIEVAL_BLOCKED };
+          const result = verifyIndex(cwd, { indexDir: cfg.indexDir, expectedFingerprint: retrieval.policy.fingerprint });
           if (result.ok) return { kind: 'success', text: `Compaction-Fidelity 索引与基线一致（${result.indexed} 文件，生成于 ${result.generatedAt}）。` };
           return { kind: 'success', text: commandTextList([
             `Compaction-Fidelity 索引需要刷新：changed=${result.changed?.length ?? 0}, missing=${result.missing?.length ?? 0}`,
@@ -587,21 +624,27 @@ export function apply(ctx, config = {}) {
           ]) };
         }
         case 'brief': {
-          ensureIndex(cwd, indexOptions);
-          const brief = briefForRoot(cwd, cfg.indexDir);
+          const retrieval = retrievalContext(cwd);
+          if (retrieval.blocked) return { kind: 'error', text: RETRIEVAL_BLOCKED };
+          ensureIndex(cwd, retrieval.options);
+          const brief = briefForRoot(cwd, retrieval.options);
           return brief === null ? { kind: 'error', text: '索引不存在，请先运行 /compaction-fidelity init。' } : { kind: 'success', text: brief };
         }
         case 'anchors': {
           const file = rest[0];
           if (file === undefined) return { kind: 'error', text: '用法：/compaction-fidelity anchors <workspace-relative-file>' };
-          const anchors = anchorsForFile(cwd, cfg.indexDir, file, 12);
+          const retrieval = retrievalContext(cwd);
+          if (retrieval.blocked) return { kind: 'error', text: RETRIEVAL_BLOCKED };
+          const anchors = anchorsForFile(cwd, cfg.indexDir, file, 12, { expectedFingerprint: retrieval.policy.fingerprint });
           if (anchors === null) return { kind: 'error', text: `索引不存在或文件未索引：${file}。先运行 /compaction-fidelity reindex。` };
           return { kind: 'success', text: commandTextList([`Compaction-Fidelity anchors for ${file}:`, ...anchors.map((anchor) => `- [${anchor.kind}] ${anchor.path} — ${anchor.reason}`)]) };
         }
         case 'lookup': {
           const query = rest.join(' ');
           if (query.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity lookup <path-or-keyword>' };
-          const index = ensureIndex(cwd, indexOptions);
+          const retrieval = retrievalContext(cwd);
+          if (retrieval.blocked) return { kind: 'error', text: RETRIEVAL_BLOCKED };
+          const index = ensureIndex(cwd, retrieval.options);
           const results = searchIndex(index, query, 12);
           return { kind: 'success', text: commandTextList([`Compaction-Fidelity lookup "${query}":`, ...results.map((entry) => entry.path.length > 0 ? `- [${entry.kind}] ${entry.path} — ${entry.why}` : `- command: ${entry.why}`)]) };
         }
@@ -803,110 +846,122 @@ export function apply(ctx, config = {}) {
     ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
       queueIndex(workspaceOf(agent));
       const decision = await next();
+      // A cancelled or rejected step must not produce any further side effect:
+      // the architecture branch below can create documents, register scopes, and
+      // write reminder state.
+      if (preStepStopped(signal, decision)) return decision;
       if (cfg.architectureDoc && getGlobalState()?.enabled !== false && !isMasterDisabled()) {
-        const askedCwd = workspaceOf(agent);
-        const last = lastUserText(decision?.messages ?? []);
-        const askedSession = String(agent?.session?.id ?? "session");
-        if (askedCwd && last.length > 0) {
-          const pending = architecturePending.get(askedSession);
-          if (pending !== undefined) {
-            const normalized = last.trim().toLowerCase();
-            const declined = /^(不|不用|不需要|跳过|取消|no|skip|cancel)[。.!！?？\s]*$/.test(normalized);
-            const consented = /^(创建|创建吧|可以|可以创建|好的|好|同意|确认|是|是的|yes|y|ok|okay|create|do it|go ahead)[。.!！?？\s]*$/.test(normalized);
-            let chosen = null;
-            if (pending.kind === "choose") {
-              chosen = pending.candidates.find((item) => {
-                const rel = item.relativeDir.toLowerCase();
-                const base = rel.split("/").pop();
-                return normalized.includes(rel) || (base !== undefined && normalized.includes(base));
-              }) ?? null;
-            }
-            if (declined) {
-              architectureAsked.add(pending.key);
-              architecturePending.delete(askedSession);
-            } else if ((pending.kind === "create" && consented) || chosen !== null) {
-              const scope = pending.kind === "create" ? pending.scope : chosen.relativeDir;
-              try {
-                const created = createArchitectureDocument(askedCwd, scope);
-                rememberArchitectureScope(agent, scope);
+        // Helpers below are best effort: a failure must leave the host decision
+        // untouched instead of breaking the agent step.
+        try {
+          const askedCwd = workspaceOf(agent);
+          const last = lastUserText(decision?.messages ?? []);
+          const askedSession = String(agent?.session?.id ?? "session");
+          if (askedCwd && last.length > 0) {
+            const pending = architecturePending.get(askedSession);
+            if (pending !== undefined) {
+              const outcome = readArchitectureConsent(pending, last);
+              if (outcome.action === "decline") {
                 architectureAsked.add(pending.key);
                 architecturePending.delete(askedSession);
-                const notice = created.created
-                  ? "[Compaction-Fidelity] 已创建 " + created.target.relative + "。"
-                  : "[Compaction-Fidelity] 已存在 " + created.target.relative + "。";
-                const message = createUserMessage({ content: [{ type: "text", text: notice }], source: PRODUCER_SOURCE });
-                return { ...decision, messages: [...(decision?.messages ?? []), message] };
-              } catch (error) {
-                ctx.logger?.warn?.("compaction-fidelity architecture create failed: " + (error instanceof Error ? error.message : String(error)));
+              } else if (outcome.action === "select") {
+                // Naming a folder selects it; it does not authorise a write. Move
+                // to an explicit create confirmation instead of creating now.
+                architecturePending.set(askedSession, { kind: "create", scope: outcome.scope, key: askedSession + "|create|" + outcome.scope });
+                const confirmation = createUserMessage({
+                  content: [{ type: "text", text: "[Compaction-Fidelity] 已选择 " + outcome.scope + "。请确认是否在该文件夹下创建 " + cfg.architectureDocName + "。" }],
+                  source: PRODUCER_SOURCE,
+                });
+                return { ...decision, messages: [...(decision?.messages ?? []), confirmation] };
+              } else if (outcome.action === "create") {
+                const scope = outcome.scope;
+                if (preStepStopped(signal, decision)) return decision;
+                try {
+                  const created = createArchitectureDocument(askedCwd, scope);
+                  rememberArchitectureScope(agent, scope);
+                  architectureAsked.add(pending.key);
+                  architecturePending.delete(askedSession);
+                  const notice = created.created
+                    ? "[Compaction-Fidelity] 已创建 " + created.target.relative + "。"
+                    : "[Compaction-Fidelity] 已存在 " + created.target.relative + "。";
+                  const message = createUserMessage({ content: [{ type: "text", text: notice }], source: PRODUCER_SOURCE });
+                  return { ...decision, messages: [...(decision?.messages ?? []), message] };
+                } catch (error) {
+                  ctx.logger?.warn?.("compaction-fidelity architecture create failed: " + (error instanceof Error ? error.message : String(error)));
+                }
               }
             }
-          }
-          const detection = detectTaskFolders([{ role: "user", content: [{ type: "text", text: last }] }], askedCwd, { docName: cfg.architectureDocName });
-          const candidates = detection?.candidates ?? [];
-          if (candidates.length > 0) {
-            const choice = detection.ambiguous ? candidates.slice(0, 5) : [detection.primary];
-            const key = askedSession + "|" + choice.map((item) => item.relativeDir).join("|");
-            if (!architectureAsked.has(key)) {
-              let text = "";
-              if (detection.ambiguous) {
-                text = "[Compaction-Fidelity] 检测到多个候选任务文件夹：" + choice.map((item) => item.relativeDir).join(" / ") + "。请先向用户确认主项目文件夹，再调用 compaction-fidelity-architecture 创建 " + cfg.architectureDocName + "。";
-              } else {
-                const target = detection.primary;
-                const doc = resolveArchitectureDoc(askedCwd, target.relativeDir, managedDocNameFor(askedCwd, target.relativeDir));
-                if (!existsSync(doc.absolute)) text = "[Compaction-Fidelity] 请先向用户确认：是否在 " + target.relativeDir + " 文件夹下创建 " + cfg.architectureDocName + " 用于记录项目架构和长期压缩工作细节上下文有损压缩后回查（该文件思路源于AOCI，建议在大型多处耦合项目或预计将执行多次修改时启用，有本次询问是因为你启用了dsh-compaction-fidelity）";
+            const detection = detectTaskFolders([{ role: "user", content: [{ type: "text", text: last }] }], askedCwd, { docName: cfg.architectureDocName });
+            const candidates = detection?.candidates ?? [];
+            if (candidates.length > 0) {
+              const choice = detection.ambiguous ? candidates.slice(0, 5) : [detection.primary];
+              const key = askedSession + "|" + choice.map((item) => item.relativeDir).join("|");
+              if (!architectureAsked.has(key)) {
+                let text = "";
+                if (detection.ambiguous) {
+                  text = "[Compaction-Fidelity] 检测到多个候选任务文件夹：" + choice.map((item) => item.relativeDir).join(" / ") + "。请先向用户确认主项目文件夹，再调用 compaction-fidelity-architecture 创建 " + cfg.architectureDocName + "。";
+                } else {
+                  const target = detection.primary;
+                  const doc = resolveArchitectureDoc(askedCwd, target.relativeDir, managedDocNameFor(askedCwd, target.relativeDir));
+                  if (!existsSync(doc.absolute)) text = "[Compaction-Fidelity] 请先向用户确认：是否在 " + target.relativeDir + " 文件夹下创建 " + cfg.architectureDocName + " 用于记录项目架构和长期压缩工作细节上下文有损压缩后回查（该文件思路源于AOCI，建议在大型多处耦合项目或预计将执行多次修改时启用，有本次询问是因为你启用了dsh-compaction-fidelity）";
+                }
+                if (text.length > 0) {
+                  architectureAsked.add(key);
+                  if (architectureAsked.size > 500) {
+                    const oldest = architectureAsked.values().next().value;
+                    if (oldest !== undefined) architectureAsked.delete(oldest);
+                  }
+                  if (!architecturePending.has(askedSession) && architecturePending.size >= MAX_ARCHITECTURE_SESSIONS) {
+                    const oldest = architecturePending.keys().next().value;
+                    if (oldest !== undefined) architecturePending.delete(oldest);
+                  }
+                  architecturePending.set(askedSession, detection.ambiguous
+                    ? { kind: "choose", candidates: choice, key }
+                    : { kind: "create", scope: detection.primary.relativeDir, key });
+                  const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
+                  return { ...decision, messages: [...(decision?.messages ?? []), message] };
+                }
+                if (!detection.ambiguous) rememberArchitectureScope(agent, detection.primary.relativeDir);
               }
-              if (text.length > 0) {
-                architectureAsked.add(key);
-                if (architectureAsked.size > 500) {
-                  const oldest = architectureAsked.values().next().value;
-                  if (oldest !== undefined) architectureAsked.delete(oldest);
+            }
+            const knownScopes = new Set(listArchitectureScopes(askedCwd));
+            setBoundedMap(architectureScopes, askedSession, knownScopes, MAX_ARCHITECTURE_SESSIONS);
+            if (knownScopes.size > 0) {
+              for (const scope of knownScopes) {
+                const doc = resolveArchitectureDoc(askedCwd, scope, managedDocNameFor(askedCwd, scope));
+                if (!existsSync(doc.absolute)) continue;
+                let docStat;
+                try {
+                  docStat = statSync(doc.absolute);
+                } catch {
+                  continue;
                 }
-                if (!architecturePending.has(askedSession) && architecturePending.size >= MAX_ARCHITECTURE_SESSIONS) {
-                  const oldest = architecturePending.keys().next().value;
-                  if (oldest !== undefined) architecturePending.delete(oldest);
-                }
-                architecturePending.set(askedSession, detection.ambiguous
-                  ? { kind: "choose", candidates: choice, key }
-                  : { kind: "create", scope: detection.primary.relativeDir, key });
+                const change = cachedArchitectureChange(askedCwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(askedCwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
+                if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
+                const now = Date.now();
+                const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);
+                let reminder = null;
+                // Reminder bookkeeping is a write: re-check cancellation first.
+                if (preStepStopped(signal, decision)) return decision;
+                mutateReminderState(askedCwd, cfg.indexDir, (store) => {
+                  const entry = store.entries[reminderKey];
+                  const decisionForEntry = reminderDecision(entry, now);
+                  reminder = decisionForEntry;
+                  if (decisionForEntry.action !== "inject") return null;
+                  store.entries[reminderKey] = recordReminder(entry, now);
+                  pruneReminderState(store, now);
+                  return store;
+                });
+                if (reminder === null || reminder.action !== "inject") continue;
+                const stageText = reminder.stage > 1 ? "，提醒阶段=" + reminder.stage : "";
+                const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，语义变化分=" + change.score + "，检测方式=" + change.method + (change.forced ? "，单文件大变更强制触发" : "") + "，阈值=" + cfg.architectureRefreshThreshold + stageText + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
                 const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
                 return { ...decision, messages: [...(decision?.messages ?? []), message] };
               }
-              if (!detection.ambiguous) rememberArchitectureScope(agent, detection.primary.relativeDir);
             }
           }
-          const knownScopes = new Set(listArchitectureScopes(askedCwd));
-          setBoundedMap(architectureScopes, askedSession, knownScopes, MAX_ARCHITECTURE_SESSIONS);
-          if (knownScopes.size > 0) {
-            for (const scope of knownScopes) {
-              const doc = resolveArchitectureDoc(askedCwd, scope, managedDocNameFor(askedCwd, scope));
-              if (!existsSync(doc.absolute)) continue;
-              let docStat;
-              try {
-                docStat = statSync(doc.absolute);
-              } catch {
-                continue;
-              }
-              const change = cachedArchitectureChange(askedCwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(askedCwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
-              if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
-              const now = Date.now();
-              const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);
-              let reminder = null;
-              mutateReminderState(askedCwd, cfg.indexDir, (store) => {
-                const entry = store.entries[reminderKey];
-                const decisionForEntry = reminderDecision(entry, now);
-                reminder = decisionForEntry;
-                if (decisionForEntry.action !== "inject") return null;
-                store.entries[reminderKey] = recordReminder(entry, now);
-                pruneReminderState(store, now);
-                return store;
-              });
-              if (reminder === null || reminder.action !== "inject") continue;
-              const stageText = reminder.stage > 1 ? "，提醒阶段=" + reminder.stage : "";
-              const text = "[Compaction-Fidelity] ARCHITECTURE.md 对齐检查（semantic_threshold）：scope=" + scope + "，语义变化分=" + change.score + "，检测方式=" + change.method + (change.forced ? "，单文件大变更强制触发" : "") + "，阈值=" + cfg.architectureRefreshThreshold + stageText + "。请在当前阶段完成后调用 compaction-fidelity-architecture action=refresh scope=" + scope + "，或执行 /compaction-fidelity architecture refresh " + scope + "。";
-              const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
-              return { ...decision, messages: [...(decision?.messages ?? []), message] };
-            }
-          }
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-compaction-fidelity architecture pre-step failed: ' + (error instanceof Error ? error.message : String(error)));
         }
       }
       if (!cfg.anchorInjection || signal?.aborted || decision?.kind === 'reject') return decision;
@@ -915,8 +970,10 @@ export function apply(ctx, config = {}) {
       const pending = recentFiles.get(key);
       if (pending === undefined || pending.size === 0) return decision;
       const cwd = workspaceOf(agent);
+      const retrieval = retrievalContext(cwd);
+      if (retrieval.blocked) return decision;
       try {
-        const index = loadIndex(cwd, cfg.indexDir);
+        const index = loadIndex(cwd, { indexDir: cfg.indexDir, expectedFingerprint: retrieval.policy.fingerprint });
         if (index === null) {
           queueIndex(cwd);
           return decision;
@@ -924,13 +981,13 @@ export function apply(ctx, config = {}) {
         const files = [...pending].slice(0, 6);
         const lines = [];
         for (const file of files) {
-          const anchors = anchorsForFile(cwd, cfg.indexDir, file, cfg.anchorsPerFile) ?? [];
+          const anchors = anchorsForFile(cwd, cfg.indexDir, file, cfg.anchorsPerFile, { expectedFingerprint: retrieval.policy.fingerprint }) ?? [];
           if (anchors.length === 0) continue;
           lines.push(`- ${file} → ${anchors.map((anchor) => `${anchor.id ? `[${anchor.id}] ` : ''}${anchor.canonical ?? anchor.path} (${anchor.kind}${Number.isFinite(anchor.quality) ? ", q" + anchor.quality : ""}: ${anchor.reason})`).join('; ')}`);
         }
         pending.clear();
         if (lines.length === 0) return decision;
-        updateAnchorsForFiles(cwd, cfg.indexDir, files, { anchorsPerFile: cfg.anchorsPerFile });
+        updateAnchorsForFiles(cwd, cfg.indexDir, files, { anchorsPerFile: cfg.anchorsPerFile, expectedFingerprint: retrieval.policy.fingerprint });
         const text = clampText(commandTextList([
           '[Compaction-Fidelity 回查锚点 / retrieval anchors]',
           'Recently modified files and their architecture-level anchors:',

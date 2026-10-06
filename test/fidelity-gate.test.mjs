@@ -37,6 +37,27 @@ test("gate passes when exact values and constraints survive", () => {
   assert.ok(gate.constraints.preserved >= 1);
 });
 
+test("a zero-recall probe run cannot pass the gate", () => {
+  const exactLedger = { exact: { paths: ["src/app.ts"], commands: [], errors: [], identifiers: [], numbers: ["8080"] } };
+  const probes = buildFidelityProbes(exactLedger);
+  const gate = evaluateFidelityGate({ fingerprint: { exactOverall: 1, cjkRecall: 1 }, constraints: null, probes, summaryText: "a summary that dropped every exact value" });
+  assert.equal(gate.exact.ratio, 0);
+  assert.equal(gate.exact.total, 2);
+  assert.equal(gate.ok, false);
+  assert.ok(gate.failures.includes("probes<0.75"), JSON.stringify(gate.failures));
+  assert.equal(gate.thresholds.probes, 0.75);
+});
+
+test("the probe threshold is configurable and a missing probe set is not a failure", () => {
+  const exactLedger = { exact: { paths: ["src/app.ts"], commands: [], errors: [], identifiers: [], numbers: [] } };
+  const probes = buildFidelityProbes(exactLedger);
+  const relaxed = evaluateFidelityGate({ fingerprint: null, constraints: null, probes, summaryText: "nothing", thresholds: { probes: 0 } });
+  assert.equal(relaxed.ok, true);
+  const empty = evaluateFidelityGate({ fingerprint: null, constraints: null, probes: [], summaryText: "nothing" });
+  assert.equal(empty.ok, true);
+  assert.equal(empty.exact.total, 0);
+});
+
 test("gate fails when a required exact value is missing", () => {
   const exactLedger = { exact: { paths: ["src/app.ts"], commands: [], errors: [], identifiers: [], numbers: ["8080"] } };
   const probes = buildFidelityProbes(exactLedger);

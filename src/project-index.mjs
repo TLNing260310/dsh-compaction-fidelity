@@ -517,6 +517,29 @@ function hydrateIndex(index) {
   return index;
 }
 
+const RETRIEVAL_SCOPE_FILE = 'retrieval-scope.json';
+/** Files whose presence marks a directory as a plugin-managed index. */
+const MANAGED_INDEX_MARKERS = ['index.json', RETRIEVAL_SCOPE_FILE, 'PROJECT.md'];
+
+function normalizeReadOptions(options) {
+  return typeof options === 'string' || options === null || options === undefined
+    ? { indexDir: options ?? DEFAULT_INDEX_DIR }
+    : options;
+}
+
+/**
+ * Cached retrieval artifacts record the read policy they were built under, so a
+ * rule change invalidates them instead of serving content the current rules no
+ * longer allow. Callers that enforce a policy pass `expectedFingerprint`; an
+ * artifact whose recorded policy is missing or different counts as absent.
+ */
+function policyAllowsCached(dir, options) {
+  const expected = options?.expectedFingerprint;
+  if (typeof expected !== 'string' || expected.length === 0) return true;
+  const manifest = readJsonIfExists(join(dir, RETRIEVAL_SCOPE_FILE), null);
+  return manifest !== null && typeof manifest === 'object' && manifest.fingerprint === expected;
+}
+
 export function buildIndex(root, options = {}) {
   const index = buildIndexData(resolve(root), options);
   if (options.write === false) return hydrateIndex(index);
@@ -529,6 +552,11 @@ export function buildIndex(root, options = {}) {
     files: Object.fromEntries(index.files.filter((file) => file.hash.length > 0).map((file) => [file.p, file.hash])),
   });
   writeJsonSync(join(indexDir, 'anchors.json'), { version: INDEX_VERSION, generatedAt: index.generatedAt, byFile: {}, archFiles: index.archFiles });
+  writeJsonSync(join(indexDir, RETRIEVAL_SCOPE_FILE), {
+    version: 1,
+    fingerprint: typeof options.scopeFingerprint === 'string' ? options.scopeFingerprint : '',
+    generatedAt: index.generatedAt,
+  });
   writeFileAtomicSync(join(indexDir, 'project.txt'), renderRoot(index));
   writeFileAtomicSync(join(indexDir, 'project.meta.txt'), renderMeta(index));
   writeFileAtomicSync(join(indexDir, 'project.code.txt'), renderCode(index));
@@ -539,9 +567,11 @@ export function buildIndex(root, options = {}) {
   return hydrateIndex(index);
 }
 
-export function loadIndex(root, indexDir = DEFAULT_INDEX_DIR) {
-  const dir = trySafeIndexDir(root, indexDir);
+export function loadIndex(root, options = DEFAULT_INDEX_DIR) {
+  const resolved = normalizeReadOptions(options);
+  const dir = trySafeIndexDir(root, resolved.indexDir ?? DEFAULT_INDEX_DIR);
   if (dir === null) return null;
+  if (!policyAllowsCached(dir, resolved)) return null;
   const file = join(dir, 'index.json');
   const index = readJsonIfExists(file, null);
   if (index === null || typeof index !== 'object') return null;
@@ -549,8 +579,7 @@ export function loadIndex(root, indexDir = DEFAULT_INDEX_DIR) {
 }
 
 export function ensureIndex(root, options = {}) {
-  const indexDir = typeof options.indexDir === 'string' && options.indexDir.length > 0 ? options.indexDir : DEFAULT_INDEX_DIR;
-  return loadIndex(root, options.indexDir ?? DEFAULT_INDEX_DIR) ?? buildIndex(root, options);
+  return loadIndex(root, options) ?? buildIndex(root, options);
 }
 
 function nearestAncestor(filesByPath, relPath, predicate) {
@@ -654,6 +683,7 @@ function renderAnchorMap(anchorState) {
 
 export function updateAnchorsForFiles(root, indexDir, files, options = {}) {
   const dir = assertSafeIndexDir(root, indexDir);
+  if (!policyAllowsCached(dir, options)) return null;
   const index = loadIndex(root, indexDir);
   if (index === null) return null;
   const stateFile = join(dir, 'anchors.json');
@@ -672,9 +702,10 @@ export function updateAnchorsForFiles(root, indexDir, files, options = {}) {
   return anchorState;
 }
 
-export function anchorsForFile(root, indexDir, file, limit = 8) {
+export function anchorsForFile(root, indexDir, file, limit = 8, options = {}) {
   const dir = trySafeIndexDir(root, indexDir);
   if (dir === null) return null;
+  if (!policyAllowsCached(dir, options)) return null;
   const index = loadIndex(root, indexDir);
   if (index === null) return null;
   const rel = toPosix(file);
@@ -704,10 +735,14 @@ export function searchIndex(index, query, limit = 12) {
   return uniqueBy(results, (entry) => `${entry.path}|${entry.id}|${entry.kind}|${entry.why}`).slice(0, limit);
 }
 
-export function verifyIndex(root, indexDir = DEFAULT_INDEX_DIR, options = {}) {
+export function verifyIndex(root, options = DEFAULT_INDEX_DIR) {
+  const resolved = normalizeReadOptions(options);
+  const indexDir = resolved.indexDir ?? DEFAULT_INDEX_DIR;
   const dir = trySafeIndexDir(root, indexDir);
+  if (dir === null) return { ok: false, reason: 'index missing' };
+  if (!policyAllowsCached(dir, resolved)) return { ok: false, reason: 'index built under a different read policy' };
   const index = loadIndex(root, indexDir);
-  if (dir === null || index === null) return { ok: false, reason: 'index missing' };
+  if (index === null) return { ok: false, reason: 'index missing' };
   const baseline = readJsonIfExists(join(dir, 'baseline.json'), { files: {} });
   const changed = [];
   const missing = [];
@@ -728,9 +763,12 @@ export function verifyIndex(root, indexDir = DEFAULT_INDEX_DIR, options = {}) {
   return { ok: changed.length === 0 && missing.length === 0, generatedAt: index.generatedAt, changed, missing, indexed: index.stats.files };
 }
 
-export function briefForRoot(root, indexDir = DEFAULT_INDEX_DIR) {
+export function briefForRoot(root, options = DEFAULT_INDEX_DIR) {
+  const resolved = normalizeReadOptions(options);
+  const indexDir = resolved.indexDir ?? DEFAULT_INDEX_DIR;
   const dir = trySafeIndexDir(root, indexDir);
   if (dir === null) return null;
+  if (!policyAllowsCached(dir, resolved)) return null;
   const file = join(dir, 'PROJECT.md');
   if (existsSync(file)) return readFileSync(file, 'utf8');
   const index = loadIndex(root, indexDir);
@@ -741,7 +779,19 @@ export function purgeIndex(root, indexDir = DEFAULT_INDEX_DIR) {
   if (!isSafeRelativePath(indexDir)) throw new Error(`unsafe indexDir "${String(indexDir)}"`);
   const target = assertSafeIndexDir(root, indexDir);
   if (resolve(target) === resolve(root)) throw new Error('refusing to purge the workspace root');
-  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+  if (!existsSync(target)) return target;
+  // A custom indexDir may point at an ordinary directory the user cares about.
+  // Only remove directories this plugin actually manages.
+  let entries;
+  try {
+    entries = readdirSync(target);
+  } catch {
+    throw new Error(`cannot read index directory: ${target}`);
+  }
+  if (!entries.some((name) => MANAGED_INDEX_MARKERS.includes(name))) {
+    throw new Error(`refusing to purge ${target}: it does not look like a compaction-fidelity index directory`);
+  }
+  rmSync(target, { recursive: true, force: true });
   return target;
 }
 
