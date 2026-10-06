@@ -32,6 +32,8 @@ This document is the public, committed release-status record for `0.3.0`. The in
 - `npm run verify:local`: passed with the installed Desktop Harness kernel and a mock LLM.
 - `npm pack`: 42 files, about 122 KiB.
 - `npm publish --dry-run`: passed; real publication was blocked by missing npm authentication.
+- Isolated DSH profile smoke (2026-10-06): installed `0.3.0` from the local tarball into a temporary `DSH_HOME`; `--dump-config` resolved the active `dsh-compaction-fidelity/engine` row with `injectionMaxTokens: 16000` and the original `compaction-basic` row disabled; the installed package's `verify-local` passed with the Desktop Harness kernel and a mock LLM; the master switch was recognized; removal restored the profile and a fresh config dump succeeded.
+- The daily Desktop profile is still on the previously installed `1.25` plugin because the Desktop app was running during this check. Upgrade it only after the app is closed and the isolated result above is accepted.
 
 ## Not yet verified
 
@@ -41,3 +43,4 @@ This document is the public, committed release-status record for `0.3.0`. The in
 - Strict case/punctuation-sensitive downstream acceptance, project-level anchor weights, and an anonymous community calibration package.
 
 See `CHANGELOG.md` and `docs/paired-evaluation-protocol.zh.md` for the release history and the frozen evaluation design.
+

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.
+- Recorded the isolated Profile smoke result: local 0.3.0 install, config composition, installed compression smoke with mock LLM, master-switch disable check, removal, and restart-config check passed; the running daily Desktop profile remains on 1.25 until it is closed.
 
 ## 0.3.0
 
@@ -157,6 +158,7 @@ Release preparation and audit.
 
 - Added 350K preset and defaults.
 - Added backend migration from persisted 800K.
+
 
 
 
