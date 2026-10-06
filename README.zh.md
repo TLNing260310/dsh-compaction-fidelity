@@ -116,7 +116,7 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 
 ### DSH Desktop 2.0.17（内嵌 Harness 0.2.0-rc.2）
 
-1. 通过 Desktop 终端/插件管理器安装[已发布 GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.2.0-rc.2.plugin.1.25)或本地检出。当前 npm 上查不到 `dsh-compaction-fidelity`，仓库也尚未被 `awesome-dsh-plugin` 收录；Desktop 内置社区市场的一键安装要求 npm `latest` 为稳定版本，因此当前 GitHub-only 预发布版本暂不满足该路径。
+1. 通过 Desktop 终端/插件管理器安装 [v0.3.0 GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.3.0) 或本地检出。`0.3.0` 是首个独立插件 SemVer 版本；npm 发布目标是 `dsh-compaction-fidelity@0.3.0`，Desktop 内置社区市场一键安装要求 npm `latest` 解析到该稳定版本。使用市场路径前先执行 `npm view dsh-compaction-fidelity version` 检查。仓库尚未被 `awesome-dsh-plugin` 收录。
 2. bundle 加入 `dsh.profile.bundles` 并应用 `cordis.patch.yml`：
    - 插入宿主插件行 `compaction-fidelity`（工具、命令、索引、锚点注入）；
    - 按 id 覆盖内置 `preset-standard` 与 `preset-cordis`，把 `compaction-basic` 行替换为 `dsh-compaction-fidelity/engine`。
@@ -125,7 +125,7 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 ### Desktop CLI profile
 
 ```powershell
-dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.2.0-rc.2.plugin.1.25'
+dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.3.0'
 dsh plugin --profile desktop remove dsh-compaction-fidelity
 ```
 
@@ -329,18 +329,12 @@ TESTBOX
 
 ## 8. 版本命名规范
 
-采用最新适配的 DSH 版本号作为前缀，用 .plugin.x.y 标识插件本体迭代。
+插件版本与适配的 Harness 版本解耦。Harness 兼容性由精确的 `@deepseek-ai/dsh` peer 声明。
 
-```text
-0.2.0-rc.2.plugin.1.0
-```
-
-- DSH 前缀当前为 0.2.0-rc.2，表示只适配该 DSH 版本区间。
-- 已发布版本：0.2.0-rc.2.plugin.1.25；当前工作树：0.2.0-rc.2.plugin.1.26-dev.0（未发布）。
-- 插件本体为 1.0；功能迭代递增为 1.1、2.0。
-
-- DSH 前缀变化时，例如升级到 0.2.0-rc.3，插件本体从 1.0 重新开始：0.2.0-rc.3.plugin.1.0。
-- 这是合法 semver prerelease 版本，GitHub tag 可用同名字符串。
+- 当前版本：`0.3.0`
+- 适配 Harness：`@deepseek-ai/dsh@0.2.0-rc.2`（社区 DSH Desktop 2.0.17）
+- 历史预发布版本使用 `<harness-version>.plugin.<n>`，例如 `0.2.0-rc.2.plugin.1.25`
+- Harness 兼容范围变化时，插件 SemVer 继续单调递增，更新 peer 并在 CHANGELOG.md 记录映射；不再把 Harness 版本写进插件版本号
 
 ## 9. 语言机制：官方为什么是英文，本插件为什么改
 

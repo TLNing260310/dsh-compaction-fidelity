@@ -1,6 +1,6 @@
 {
   "name": "dsh-compaction-fidelity",
-  "version": "0.2.0-rc.2.plugin.1.26-dev.0",
+  "version": "0.3.0",
   "description": "Bilingual DSH compaction backend with lexical fidelity metrics, compensation, and project architecture retrieval.",
   "license": "MIT",
   "repository": {
@@ -37,7 +37,7 @@
     "cordis.patch.yml",
     "icon.svg",
     "locale/**",
-    "docs/*.md",
+    "docs/paired-evaluation-protocol.zh.md",
     "licenses/**",
     "README.md",
     "README.zh.md",

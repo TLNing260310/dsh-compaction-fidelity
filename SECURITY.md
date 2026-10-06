@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-This repository targets the DeepSeek Harness `0.2.0-rc.2` runtime bundled in community DSH Desktop `2.0.17` and follows the package version scheme `0.2.0-rc.2.plugin.*`.
+This repository targets the DeepSeek Harness `0.2.0-rc.2` runtime bundled in community DSH Desktop `2.0.17` and uses independent plugin SemVer. Release `0.3.0` keeps Harness compatibility in the exact `@deepseek-ai/dsh@0.2.0-rc.2` peer dependency; historical `0.2.0-rc.2.plugin.*` prereleases remain documented in `CHANGELOG.md`.
 
 ## Runtime security model
 
@@ -54,3 +54,4 @@ Do not include live tokens, credentials, or private repository contents in publi
 ## Migration backup handling
 
 The migration covers known fingerprint fields, including nested final-fidelity values. It does not sanitize arbitrary metadata or the calibration store. Backups retain the original private text: exclude `fingerprint-privacy-backup/` from shared evidence and review imported samples separately. Custom `--backup-dir` paths resolve relative to the selected workspace and must name a new directory inside it, separate from fingerprints. Linked/junction paths, hard-linked files, oversized/non-object JSON, and damaged sidecars are rejected or skipped. Apply reports skipped files and exits nonzero; inspect the report before treating migration as complete. Stop active compaction while migrating; locked compare-and-swap writes detect ordinary conflicts but do not provide a filesystem sandbox against hostile concurrent path swaps.
+

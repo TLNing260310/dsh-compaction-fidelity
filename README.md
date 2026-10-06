@@ -105,12 +105,12 @@ Selection- or verbatim-based compaction keeps the text it chooses; it does not t
 
 ## Install
 
-On DSH Desktop `2.0.17` (bundled runtime `0.2.0-rc.2`), install the [published GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.2.0-rc.2.plugin.1.25) or a local checkout through the Desktop terminal/plugin manager. **`dsh-compaction-fidelity` is not currently published on npm**, and this repository is not yet listed in `awesome-dsh-plugin`. The Desktop community marketplace's one-click path requires an npm `latest` stable package, so this GitHub-only prerelease is not yet eligible for that path.
+On DSH Desktop `2.0.17` (bundled runtime `0.2.0-rc.2`), install the [v0.3.0 GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.3.0) or a local checkout through the Desktop terminal/plugin manager. `0.3.0` is the first independent plugin SemVer release; the npm publication target is `dsh-compaction-fidelity@0.3.0`, and the Desktop community marketplace one-click path becomes available only after npm `latest` resolves to that stable version. Check `npm view dsh-compaction-fidelity version` before using the marketplace path. This repository is not yet listed in `awesome-dsh-plugin`.
 
 Desktop CLI profile:
 
 ```powershell
-dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.2.0-rc.2.plugin.1.25'
+dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.3.0'
 dsh plugin --profile desktop remove dsh-compaction-fidelity
 ```
 
@@ -177,12 +177,12 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 ## Versioning
 
-`<latest-adapted-DSH-version>.plugin.<plugin-major>.<plugin-minor>`
+Plugin SemVer is independent from the adapted Harness version. Harness compatibility is declared by the exact `@deepseek-ai/dsh` peer dependency.
 
-- Published: `0.2.0-rc.2.plugin.1.25`; current checkout: `0.2.0-rc.2.plugin.1.26-dev.0` (not released)
-- DSH prefix: exact DSH version range this plugin targets
-- Plugin body: `1.0`; increments to `1.1`, `2.0`
-- On DSH prefix change, plugin body restarts at `1.0`
+- Current release: `0.3.0`
+- Adapted Harness: `@deepseek-ai/dsh@0.2.0-rc.2` (community DSH Desktop `2.0.17`)
+- Historical prereleases used `<harness-version>.plugin.<n>`, for example `0.2.0-rc.2.plugin.1.25`
+- On a Harness compatibility change, keep plugin SemVer monotonic, update the peer, and record the mapping in `CHANGELOG.md`; do not encode the Harness version in the plugin version
 
 ## Why the language mechanism differs from the official English-only template
 

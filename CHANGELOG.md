@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.2.0-rc.2.plugin.1.26-dev.0 (unreleased)
+## 0.3.0
+
+First independent plugin SemVer release. Compatible with community DSH Desktop `2.0.17` / DeepSeek Harness `0.2.0-rc.2` through the exact peer dependency; the Harness version is no longer encoded in the plugin version. Real long-session paired evaluation remains pending, so this release documents mechanisms and measured local evidence rather than a superiority claim.
 
 - Corrected pure/mixed-language calibration isolation and added a bounded calibration summary/import command with validation, deduplication, and provenance.
 - Refused to overwrite malformed calibration evidence during recording or import.
@@ -151,4 +153,5 @@ Release preparation and audit.
 
 - Added 350K preset and defaults.
 - Added backend migration from persisted 800K.
+
 
