@@ -38,6 +38,7 @@
     "icon.svg",
     "locale/**",
     "docs/paired-evaluation-protocol.zh.md",
+    "docs/release-status-0.3.0.md",
     "licenses/**",
     "README.md",
     "README.zh.md",

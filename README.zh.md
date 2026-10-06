@@ -2,7 +2,7 @@
 
 > 项目名与包名：`dsh-compaction-fidelity`；定位：DSH 上下文压缩保真层。
 
-面向社区版 **DSH Desktop 2.0.17** 所内嵌 **DeepSeek Harness 0.2.0-rc.2** 运行时的 Profile Bundle：双语压缩引擎 + 跨语言保真指纹与补偿 + 项目架构回查锚点 + 动态压缩线。版本、市场与分发核对见 [2026-10-06 兼容性及市场审计](docs/DSH-compatibility-and-market-audit-2026-10-06.md)。
+面向社区版 **DSH Desktop 2.0.17** 所内嵌 **DeepSeek Harness 0.2.0-rc.2** 运行时的 Profile Bundle：双语压缩引擎 + 跨语言保真指纹与补偿 + 项目架构回查锚点 + 动态压缩线。版本、迁移、预算、验证与分发状态见 [0.3.0 发布状态](docs/release-status-0.3.0.md)，真实三后端评测设计见 [配对评测协议](docs/paired-evaluation-protocol.zh.md)。
 
 ## 项目目的
 
@@ -539,3 +539,4 @@ Compaction-Fidelity 的 Localization contract 也支持这一判断：en-US 与 
 - update 动作仍然只追加，不覆写原介绍。
 
 旧指纹迁移默认只读。apply 会在工作区内创建独占备份；备份仍含原文，不能直接公开。工具检测嵌套 final-fidelity 精确值，拒绝链接、硬链接及复用备份目录，不修改校准账本。真正的 basic/pro/fidelity 对照见[配对评测协议](docs/paired-evaluation-protocol.zh.md)，目前尚未执行；保真 gate 只报告诊断，不阻止压缩。
+

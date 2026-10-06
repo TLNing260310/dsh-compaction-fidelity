@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.
+
 ## 0.3.0
 
 First independent plugin SemVer release. Compatible with community DSH Desktop `2.0.17` / DeepSeek Harness `0.2.0-rc.2` through the exact peer dependency; the Harness version is no longer encoded in the plugin version. Real long-session paired evaluation remains pending, so this release documents mechanisms and measured local evidence rather than a superiority claim.
@@ -153,5 +157,6 @@ Release preparation and audit.
 
 - Added 350K preset and defaults.
 - Added backend migration from persisted 800K.
+
 
 

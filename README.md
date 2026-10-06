@@ -2,7 +2,7 @@
 
 > Project and package name: `dsh-compaction-fidelity`; positioning: bilingual DSH compaction backend with fidelity diagnostics.
 
-A Profile Bundle for the `0.2.0-rc.2` DeepSeek Harness runtime bundled by community DSH Desktop `2.0.17`. It combines a bilingual compaction engine, deterministic fidelity fingerprints and compensation, project architecture retrieval anchors, and a dynamic compaction line. See [the compatibility and marketplace audit](docs/DSH-compatibility-and-market-audit-2026-10-06.md) for verified version and distribution status.
+A Profile Bundle for the `0.2.0-rc.2` DeepSeek Harness runtime bundled by community DSH Desktop `2.0.17`. It combines a bilingual compaction engine, deterministic fidelity fingerprints and compensation, project architecture retrieval anchors, and a dynamic compaction line. See [the 0.3.0 release status](docs/release-status-0.3.0.md) and [the paired evaluation protocol](docs/paired-evaluation-protocol.zh.md) for verified version, distribution, validation, and evaluation-design status.
 
 ## Purpose
 
@@ -247,3 +247,4 @@ The official DSH 0.2.0 compaction instruction forces English prose for cross-mod
 - Attribution: THIRD-PARTY-NOTICES.md and licenses/AOCI-FSL-1.1-MIT.txt.
 
 Legacy fingerprint migration defaults to dry-run. Apply creates an exclusive backup inside the workspace; backups retain private text and must not be shared. It detects nested final-fidelity raw values and rejects linked paths, hard links, and reused backup directories. It leaves the calibration store untouched. See [the paired evaluation protocol](docs/paired-evaluation-protocol.zh.md) for the pending basic/pro/fidelity comparison. The current fidelity gate reports diagnostics; it does not block compaction.
+
