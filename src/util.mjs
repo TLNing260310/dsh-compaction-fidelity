@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const TEXT_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.go', '.py', '.rs', '.java', '.kt', '.kts',
@@ -121,6 +121,70 @@ export function uniqueBy(items, keyFn) {
     out.push(item);
   }
   return out;
+}
+
+export function pathEscapes(root, target) {
+  const rel = relative(resolve(root), resolve(target));
+  if (rel.length === 0) return false;
+  if (isAbsolute(rel)) return true;
+  return rel === '..' || rel.startsWith(`..${sep}`);
+}
+
+/**
+ * Resolve and validate a path that must stay inside a workspace. Rejects
+ * symlinked or junctioned path components, including linked parents such as a
+ * workspace `.dsh` directory that points outside the workspace. The final
+ * target itself does not need to exist; its nearest existing ancestor is
+ * resolved and checked.
+ */
+export function assertWorkspaceContained(root, target) {
+  const rootAbs = resolve(root);
+  let rootReal;
+  try {
+    rootReal = realpathSync(rootAbs);
+  } catch {
+    throw new Error(`workspace root does not exist: ${rootAbs}`);
+  }
+  const targetAbs = resolve(target);
+  if (pathEscapes(rootAbs, targetAbs)) throw new Error(`path escapes workspace: ${targetAbs}`);
+  const rel = relative(rootAbs, targetAbs);
+  const parts = rel.split(sep).filter((part) => part.length > 0);
+  let cursor = rootAbs;
+  for (const part of parts) {
+    cursor = join(cursor, part);
+    let stat;
+    try {
+      stat = lstatSync(cursor);
+    } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      let linkedReal = cursor;
+      try {
+        linkedReal = realpathSync(cursor);
+      } catch {
+        linkedReal = cursor;
+      }
+      if (pathEscapes(rootReal, linkedReal)) throw new Error(`path escapes workspace through a linked parent: ${cursor}`);
+      throw new Error(`path contains a symbolic link or junction; symlinks and junctions are not allowed: ${cursor}`);
+    }
+    if (cursor !== targetAbs && !stat.isDirectory()) throw new Error(`path component is not a directory: ${cursor}`);
+  }
+  let existing = targetAbs;
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  let existingReal;
+  try {
+    existingReal = realpathSync(existing);
+  } catch {
+    throw new Error(`cannot resolve path: ${existing}`);
+  }
+  if (pathEscapes(rootReal, existingReal)) throw new Error(`path escapes workspace through a linked parent: ${targetAbs}`);
+  return targetAbs;
 }
 
 export function isInsideWorkspace(root, file) {

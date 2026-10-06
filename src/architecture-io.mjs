@@ -1,7 +1,11 @@
 // Atomic, locked, compare-and-swap writes for folder-scoped architecture documents.
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import { assertWorkspaceContained } from "./util.mjs";
+
+export { assertWorkspaceContained };
+
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5000;
 const DEFAULT_LOCK_STALE_MS = 30000;
@@ -9,22 +13,6 @@ const DEFAULT_LOCK_STALE_MS = 30000;
 export function architectureHash(text) {
   return createHash("sha256").update(String(text ?? ""), "utf8").digest("hex");
 }
-export function assertWorkspaceContained(root, target) {
-  const rootReal = realpathSync(resolve(root));
-  let current = dirname(resolve(target));
-  for (;;) {
-    if (existsSync(current)) {
-      const real = realpathSync(current);
-      const rel = relative(rootReal, real);
-      if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("architecture target escapes workspace: " + target);
-      return;
-    }
-    const parent = dirname(current);
-    if (parent === current) return;
-    current = parent;
-  }
-}
-
 function sleepMs(ms) {
   const shared = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(shared, 0, 0, ms);

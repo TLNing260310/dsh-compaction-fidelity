@@ -2,7 +2,7 @@
 
 > Project and package name: `dsh-compaction-fidelity`; positioning: bilingual DSH compaction backend with fidelity diagnostics.
 
-A Profile Bundle for the `0.2.0-rc.2` DeepSeek Harness runtime bundled by community DSH Desktop `2.0.17`. It combines a bilingual compaction engine, deterministic fidelity fingerprints and compensation, project architecture retrieval anchors, and a dynamic compaction line. See [the 0.3.0 release status](docs/release-status-0.3.0.md) and [the paired evaluation protocol](docs/paired-evaluation-protocol.zh.md) for verified version, distribution, validation, and evaluation-design status.
+A Profile Bundle for the `0.2.0-rc.2` DeepSeek Harness runtime bundled by community DSH Desktop `2.0.17`. It combines a bilingual compaction engine, deterministic fidelity fingerprints and compensation, project architecture retrieval anchors, and a dynamic compaction line. See [the 0.3.1 release status](docs/release-status-0.3.1.md) and [the paired evaluation protocol](docs/paired-evaluation-protocol.zh.md) for verified version, distribution, validation, and evaluation-design status.
 
 ## Purpose
 
@@ -105,12 +105,12 @@ Selection- or verbatim-based compaction keeps the text it chooses; it does not t
 
 ## Install
 
-On DSH Desktop `2.0.17` (bundled runtime `0.2.0-rc.2`), install the [v0.3.0 GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.3.0) or a local checkout through the Desktop terminal/plugin manager. `0.3.0` is the first independent plugin SemVer release; the npm publication target is `dsh-compaction-fidelity@0.3.0`, and the Desktop community marketplace one-click path becomes available only after npm `latest` resolves to that stable version. Check `npm view dsh-compaction-fidelity version` before using the marketplace path. This repository is not yet listed in `awesome-dsh-plugin`.
+On DSH Desktop `2.0.17` (bundled runtime `0.2.0-rc.2`), install the [v0.3.1 GitHub tag](https://github.com/TLNing260310/dsh-compaction-fidelity/releases/tag/v0.3.1) or a local checkout through the Desktop terminal/plugin manager. `0.3.1` is the current hardening release; the npm publication target is `dsh-compaction-fidelity@0.3.1`, and the Desktop community marketplace one-click path becomes available only after npm `latest` resolves to that stable version. Check `npm view dsh-compaction-fidelity version` before using the marketplace path. This repository is not yet listed in `awesome-dsh-plugin`.
 
 Desktop CLI profile:
 
 ```powershell
-dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.3.0'
+dsh plugin --profile desktop add 'github:TLNing260310/dsh-compaction-fidelity#v0.3.1'
 dsh plugin --profile desktop remove dsh-compaction-fidelity
 ```
 
@@ -179,7 +179,7 @@ MIT License. Upstream AOCI-CODE notices live in `THIRD-PARTY-NOTICES.md` and `li
 
 Plugin SemVer is independent from the adapted Harness version. Harness compatibility is declared by the exact `@deepseek-ai/dsh` peer dependency.
 
-- Current release: `0.3.0`
+- Current release: `0.3.1`
 - Adapted Harness: `@deepseek-ai/dsh@0.2.0-rc.2` (community DSH Desktop `2.0.17`)
 - Historical prereleases used `<harness-version>.plugin.<n>`, for example `0.2.0-rc.2.plugin.1.25`
 - On a Harness compatibility change, keep plugin SemVer monotonic, update the peer, and record the mapping in `CHANGELOG.md`; do not encode the Harness version in the plugin version

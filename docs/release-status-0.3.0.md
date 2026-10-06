@@ -6,7 +6,7 @@ Commit: `a20eab0`
 Plugin version: `0.3.0`
 Adapted runtime: community DSH Desktop `2.0.17`, DeepSeek Harness `@deepseek-ai/dsh@0.2.0-rc.2`
 
-This document is the public, committed release-status record for `0.3.0`. The internal compatibility and market audit remains a local working document and is not part of the repository or npm package.
+This document is the public, committed release-status record for `0.3.0`. It is kept for history; the current hardening release is documented in [`release-status-0.3.1.md`](release-status-0.3.1.md). The internal compatibility and market audit remains a local working document and is not part of the repository or npm package.
 
 ## Distribution status
 

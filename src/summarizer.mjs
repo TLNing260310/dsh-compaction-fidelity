@@ -265,6 +265,15 @@ function summaryBlock(id, priority, text) {
   return { id, priority, text };
 }
 
+function formatCognitionRefreshDocs(scopes) {
+  return (scopes ?? []).map((item) => {
+    if (typeof item === "string") return `- ${item === "." ? "" : `${item}/`}ARCHITECTURE.md`;
+    const scope = typeof item?.scope === "string" ? item.scope : ".";
+    const docName = typeof item?.docName === "string" ? item.docName : "ARCHITECTURE.md";
+    return `- ${scope === "." ? "" : `${scope}/`}${docName}`;
+  }).join("\n");
+}
+
 function summaryInstructionParts({ ledger, brief, anchors, ledgerText, constraintsText, architectureDocs, cognitionRefreshScopes, structure, languageRule, acknowledgmentRule }) {
   const fixedText = [
     'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.',
@@ -295,7 +304,7 @@ function summaryInstructionParts({ ledger, brief, anchors, ledgerText, constrain
     summaryBlock('verbatim_user_input', 1, (ledger?.userQuotes?.length ?? 0) > 0 ? `<verbatim_user_input>\n${clampText((ledger.userQuotes ?? []).map((quote, index) => `[${index + 1}] ${quote}`).join('\n\n'), 7000)}\n</verbatim_user_input>` : ''),
     summaryBlock('pinned_constraints', 0, constraintsText ? `<pinned_constraints>\n${clampText(constraintsText, 2000)}\n</pinned_constraints>` : ''),
     summaryBlock('architecture_retrieval_docs', 2, architectureDocs ? `<architecture_retrieval_docs>\n${clampText(architectureDocs, 8000)}\n</architecture_retrieval_docs>` : ''),
-    summaryBlock('cognition_refresh', 4, cognitionRefreshScopes.length > 0 ? `<cognition_refresh trigger="context_compaction">\n${clampText(cognitionRefreshScopes.map((scope) => `- ${scope}/ARCHITECTURE.md`).join('\n'), 1000)}\n压缩结束后请刷新这些 ARCHITECTURE.md；可调用 compaction-fidelity-architecture action=refresh 或执行 /compaction-fidelity architecture refresh <scope>。\n</cognition_refresh>` : ''),
+    summaryBlock('cognition_refresh', 4, cognitionRefreshScopes.length > 0 ? `<cognition_refresh trigger="context_compaction">\n${clampText(formatCognitionRefreshDocs(cognitionRefreshScopes), 1000)}\n压缩结束后请刷新这些 ARCHITECTURE.md；可调用 compaction-fidelity-architecture action=refresh 或执行 /compaction-fidelity architecture refresh <scope>。\n</cognition_refresh>` : ''),
   ].filter((block) => block.text.length > 0);
   return { fixedText, blocks };
 }

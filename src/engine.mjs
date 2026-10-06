@@ -13,6 +13,7 @@ import { buildFidelitySample, calibrateFidelityLevel, recordFidelitySample } fro
 import { buildFidelityProbes, evaluateFidelityGate } from './fidelity-gate.mjs';
 import { aggregateComparison as storedComparison, aggregateConstraints as storedConstraints, aggregateGate as storedGate } from './fingerprint-privacy.mjs';
 import { readArchitectureDoc } from './architecture-doc.mjs';
+import { managedDocTarget, readArchitectureRegistry } from './architecture-registry.mjs';
 import { assertWorkspaceContained } from './architecture-io.mjs';
 import { pickRetentionRange } from './range.mjs';
 import { mergeRuntimeState, normalizeThreshold, resolveAbsoluteThresholdPlan, resolveThresholdPlan } from './state.mjs';
@@ -203,6 +204,8 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         summaryProvider: this.fidelityConfig.summaryProvider,
         summaryModel: this.fidelityConfig.summaryModel,
         compactionRetries: this.fidelityConfig.compactionRetries,
+        anchors: this.fidelityConfig.anchors !== false,
+        anchorsPerFile: this.fidelityConfig.anchorsPerFile,
         indexDir: this.fidelityConfig.indexDir,
       },
       { cwd, indexDir: this.fidelityConfig.indexDir },
@@ -501,15 +504,27 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     let architectureDocs = "";
     let cognitionRefreshScopes = [];
     try {
+      const registry = readArchitectureRegistry(cwd, this.fidelityConfig.indexDir);
       const seenDocs = new Set();
-      const refreshScopes = new Set();
+      const refreshScopes = new Map();
       const entries = [];
       const addDoc = (doc, priority) => {
         if (doc === null || doc === undefined || seenDocs.has(doc.relative)) return;
         seenDocs.add(doc.relative);
-        const scope = doc.relative === "ARCHITECTURE.md" ? "." : doc.relative.slice(0, doc.relative.length - "ARCHITECTURE.md".length - 1);
-        refreshScopes.add(scope);
-        entries.push({ text: "### " + doc.relative + "\n" + clampText(doc.text, 4000) });
+        const scope = typeof doc.scope === "string" ? doc.scope : ".";
+        const docName = typeof doc.docName === "string" ? doc.docName : "ARCHITECTURE.md";
+        refreshScopes.set(scope, docName);
+        entries.push({ text: "### " + doc.relative + "\n" + clampText(doc.text, 4000), priority });
+      };
+      const readManagedDoc = (scope, fallbackDoc = "ARCHITECTURE.md") => {
+        try {
+          const target = managedDocTarget(registry, scope, fallbackDoc);
+          if (target === null) return null;
+          return readArchitectureDoc(cwd, target.scope, target.docName);
+        } catch (error) {
+          this.ctx.logger?.warn?.("compaction-fidelity managed architecture doc skipped: " + (error instanceof Error ? error.message : String(error)));
+          return null;
+        }
       };
       for (const file of referencedFiles.slice(0, 8)) {
         let dir = file;
@@ -518,36 +533,30 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
           parts.pop();
           dir = parts.join("/");
           if (dir.length === 0) dir = ".";
-          addDoc(readArchitectureDoc(cwd, dir, "ARCHITECTURE.md"), 0);
+          addDoc(readManagedDoc(dir), 0);
           if (dir === ".") break;
         }
       }
-      const registryFile = join(cwd, this.fidelityConfig.indexDir, "architecture-scopes.json");
-      if (existsSync(registryFile)) {
-        try {
-          const scopes = JSON.parse(readFileSync(registryFile, "utf8"));
-          if (Array.isArray(scopes)) {
-            const ordered = scopes
-              .map((scope) => {
-                const doc = readArchitectureDoc(cwd, String(scope), "ARCHITECTURE.md");
-                let mtimeMs = 0;
-                if (doc !== null) {
-                  try {
-                    mtimeMs = statSync(doc.absolute).mtimeMs;
-                  } catch {
-                    mtimeMs = 0;
-                  }
-                }
-                return { doc, mtimeMs };
-              })
-              .sort((left, right) => right.mtimeMs - left.mtimeMs);
-            for (const item of ordered.slice(0, 12)) addDoc(item.doc, 1);
-          }
-        } catch {
-          // registry is optional; referenced docs still work
-        }
+      const registeredScopes = Object.keys(registry?.scopes ?? {});
+      if (registeredScopes.length > 0) {
+        const ordered = registeredScopes
+          .map((scope) => {
+            const target = managedDocTarget(registry, scope);
+            const doc = target === null ? null : readManagedDoc(target.scope, target.docName);
+            let mtimeMs = 0;
+            if (doc !== null) {
+              try {
+                mtimeMs = statSync(doc.absolute).mtimeMs;
+              } catch {
+                mtimeMs = 0;
+              }
+            }
+            return { doc, mtimeMs };
+          })
+          .sort((left, right) => right.mtimeMs - left.mtimeMs);
+        for (const item of ordered.slice(0, 12)) addDoc(item.doc, 1);
       }
-      addDoc(readArchitectureDoc(cwd, ".", "ARCHITECTURE.md"), 2);
+      addDoc(readManagedDoc("."), 2);
       const maxTotal = 8000;
       let used = 0;
       const docLines = [];
@@ -559,7 +568,7 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         used += text.length + 2;
       }
       architectureDocs = docLines.join("\n\n");
-      cognitionRefreshScopes = [...refreshScopes];
+      cognitionRefreshScopes = [...refreshScopes.entries()].map(([scope, docName]) => ({ scope, docName }));
     } catch (error) {
       this.ctx.logger?.warn?.("compaction-fidelity architecture doc lookup failed: " + (error instanceof Error ? error.message : String(error)));
     }
@@ -615,7 +624,10 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     const pinned = constraintComparison.verdicts.filter((verdict) => verdict.verdict !== "preserved");
     const pinnedText = pinned.map((verdict, index) => "- [" + (index + 1) + "] " + verdict.text).join("\n");
     const postInjectionBudget = Math.max(0, injectionBudget - instructionResult.diagnostics.estimatedTokens);
-    const pinnedTokens = estimateTextTokens(pinnedText);
+    const pinnedBlockOpen = "<pinned_constraints>\n";
+    const pinnedBlockClose = "\n</pinned_constraints>";
+    const pinnedTagTokens = estimateTextTokens(pinnedBlockOpen + pinnedBlockClose);
+    const pinnedTokens = pinnedText.length > 0 ? estimateTextTokens(pinnedText) + pinnedTagTokens : 0;
     const pinnedReserved = pinnedText.length > 0 ? Math.min(pinnedTokens, Math.floor(postInjectionBudget / 2)) : 0;
     const compensationBudget = Math.min(this.fidelityConfig.compensationMaxTokens, Math.max(0, postInjectionBudget - pinnedReserved));
     const compensation = compensationBudget >= 128
@@ -625,12 +637,13 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     if (pinnedText.length > 0) {
       const remainingAfterCompensation = Math.max(0, postInjectionBudget - estimateTextTokens(compensation.text));
       const pinnedBudget = Math.max(pinnedReserved, remainingAfterCompensation);
-      const cappedPinnedText = clampTextToTokens(pinnedText, pinnedBudget);
+      const pinnedContentBudget = Math.max(0, pinnedBudget - pinnedTagTokens);
+      const cappedPinnedText = clampTextToTokens(pinnedText, pinnedContentBudget);
       if (cappedPinnedText.length < pinnedText.length) {
         this.ctx.logger?.warn?.("compaction-fidelity pinned constraints truncated to fit the injection budget: " + cappedPinnedText.length + "/" + pinnedText.length + " chars");
       }
       if (cappedPinnedText.length > 0) {
-        summary.push({ type: 'text', text: "<pinned_constraints>\n" + cappedPinnedText + "\n</pinned_constraints>" });
+        summary.push({ type: 'text', text: pinnedBlockOpen + cappedPinnedText + pinnedBlockClose });
       }
     }
     const gate = evaluateFidelityGate({ fingerprint: fidelity, constraints: constraintLedger, probes: buildFidelityProbes(preFingerprint), summaryText: summary.map((block) => block.text).join("\n") });

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import {
   CODE_EXTENSIONS,
@@ -11,6 +11,7 @@ import {
   ensureDirSync,
   extnameLower,
   formatBytes,
+  assertWorkspaceContained,
   isSafeRelativePath,
   joinWorkspace,
   normalizeRelPath,
@@ -48,11 +49,24 @@ function isCodeFile(relPath) {
   return CODE_EXTENSIONS.has(extnameLower(relPath));
 }
 
+export function isSensitiveIndexPath(relPath) {
+  const value = String(relPath ?? "");
+  return SENSITIVE_FILE_RE.test(value) || SENSITIVE_EXT_RE.test(value);
+}
+
 function assertSafeIndexDir(root, indexDir) {
   if (!isSafeRelativePath(indexDir)) throw new Error(`unsafe indexDir "${String(indexDir)}"`);
   const abs = join(resolve(root), ...indexDir.split('/'));
-  if (existsSync(abs) && lstatSync(abs).isSymbolicLink()) throw new Error(`indexDir "${indexDir}" must not be a symbolic link`);
+  assertWorkspaceContained(root, abs);
   return abs;
+}
+
+function trySafeIndexDir(root, indexDir) {
+  try {
+    return assertSafeIndexDir(root, indexDir);
+  } catch {
+    return null;
+  }
 }
 
 function canonicalCodeId(relPath) {
@@ -526,8 +540,9 @@ export function buildIndex(root, options = {}) {
 }
 
 export function loadIndex(root, indexDir = DEFAULT_INDEX_DIR) {
-  if (!isSafeRelativePath(indexDir)) return null;
-  const file = join(resolve(root), indexDir, 'index.json');
+  const dir = trySafeIndexDir(root, indexDir);
+  if (dir === null) return null;
+  const file = join(dir, 'index.json');
   const index = readJsonIfExists(file, null);
   if (index === null || typeof index !== 'object') return null;
   return hydrateIndex(index);
@@ -638,9 +653,10 @@ function renderAnchorMap(anchorState) {
 }
 
 export function updateAnchorsForFiles(root, indexDir, files, options = {}) {
+  const dir = assertSafeIndexDir(root, indexDir);
   const index = loadIndex(root, indexDir);
   if (index === null) return null;
-  const stateFile = join(resolve(root), indexDir, 'anchors.json');
+  const stateFile = join(dir, 'anchors.json');
   const anchorState = readJsonIfExists(stateFile, { version: INDEX_VERSION, generatedAt: index.generatedAt, byFile: {}, archFiles: index.archFiles });
   anchorState.byFile = anchorState.byFile ?? {};
   for (const file of files) {
@@ -652,15 +668,17 @@ export function updateAnchorsForFiles(root, indexDir, files, options = {}) {
   }
   anchorState.generatedAt = new Date().toISOString();
   writeJsonSync(stateFile, anchorState);
-  writeFileAtomicSync(join(resolve(root), indexDir, 'anchors.md'), renderAnchorMap(anchorState));
+  writeFileAtomicSync(join(dir, 'anchors.md'), renderAnchorMap(anchorState));
   return anchorState;
 }
 
 export function anchorsForFile(root, indexDir, file, limit = 8) {
+  const dir = trySafeIndexDir(root, indexDir);
+  if (dir === null) return null;
   const index = loadIndex(root, indexDir);
   if (index === null) return null;
   const rel = toPosix(file);
-  const stateFile = join(resolve(root), indexDir, 'anchors.json');
+  const stateFile = join(dir, 'anchors.json');
   const anchorState = readJsonIfExists(stateFile, { byFile: {} });
   const stored = anchorState.byFile?.[rel];
   if (Array.isArray(stored) && stored.length > 0 && stored.every((anchor) => Number.isFinite(anchor?.quality))) return stored;
@@ -687,9 +705,10 @@ export function searchIndex(index, query, limit = 12) {
 }
 
 export function verifyIndex(root, indexDir = DEFAULT_INDEX_DIR, options = {}) {
+  const dir = trySafeIndexDir(root, indexDir);
   const index = loadIndex(root, indexDir);
-  if (index === null) return { ok: false, reason: 'index missing' };
-  const baseline = readJsonIfExists(join(resolve(root), indexDir, 'baseline.json'), { files: {} });
+  if (dir === null || index === null) return { ok: false, reason: 'index missing' };
+  const baseline = readJsonIfExists(join(dir, 'baseline.json'), { files: {} });
   const changed = [];
   const missing = [];
   for (const [file, hash] of Object.entries(baseline.files ?? {})) {
@@ -710,10 +729,20 @@ export function verifyIndex(root, indexDir = DEFAULT_INDEX_DIR, options = {}) {
 }
 
 export function briefForRoot(root, indexDir = DEFAULT_INDEX_DIR) {
-  const file = join(resolve(root), indexDir, 'PROJECT.md');
+  const dir = trySafeIndexDir(root, indexDir);
+  if (dir === null) return null;
+  const file = join(dir, 'PROJECT.md');
   if (existsSync(file)) return readFileSync(file, 'utf8');
   const index = loadIndex(root, indexDir);
   return index === null ? null : buildBrief(index);
+}
+
+export function purgeIndex(root, indexDir = DEFAULT_INDEX_DIR) {
+  if (!isSafeRelativePath(indexDir)) throw new Error(`unsafe indexDir "${String(indexDir)}"`);
+  const target = assertSafeIndexDir(root, indexDir);
+  if (resolve(target) === resolve(root)) throw new Error('refusing to purge the workspace root');
+  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+  return target;
 }
 
 

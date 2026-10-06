@@ -8,6 +8,7 @@ import {
   globToRegExp,
   isValidScopePattern,
   createWorkspaceFileFilter,
+  managedDocTarget,
   matchesScopeRules,
   readArchitectureRegistry,
   removeArchitectureScope,
@@ -160,4 +161,17 @@ test("index wires managed filters and scheduling guards", () => {
   assert.match(source, /const cachedArchitectureChange =/);
   assert.match(source, /const MAX_SESSION_FILES = 64;/);
   assert.match(source, /architectureCheckCache\.clear\(\);/);
+});
+
+test("managed document targets respect custom names and exclusion rules", () => {
+  const registry = {
+    version: 2,
+    scopes: {
+      excluded: { doc: "ARCHITECTURE.md", include: [], exclude: ["ARCHITECTURE.md"] },
+      custom: { doc: "DESIGN.md", include: ["DESIGN.md"], exclude: [] },
+    },
+  };
+  assert.equal(managedDocTarget(registry, "excluded"), null);
+  assert.deepEqual(managedDocTarget(registry, "custom"), { scope: "custom", docName: "DESIGN.md", relative: "custom/DESIGN.md" });
+  assert.deepEqual(managedDocTarget(registry, "."), { scope: ".", docName: "ARCHITECTURE.md", relative: "ARCHITECTURE.md" });
 });

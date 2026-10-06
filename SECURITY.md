@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-This repository targets the DeepSeek Harness `0.2.0-rc.2` runtime bundled in community DSH Desktop `2.0.17` and uses independent plugin SemVer. Release `0.3.0` keeps Harness compatibility in the exact `@deepseek-ai/dsh@0.2.0-rc.2` peer dependency; historical `0.2.0-rc.2.plugin.*` prereleases remain documented in `CHANGELOG.md`.
+This repository targets the DeepSeek Harness `0.2.0-rc.2` runtime bundled in community DSH Desktop `2.0.17` and uses independent plugin SemVer. Release `0.3.1` keeps Harness compatibility in the exact `@deepseek-ai/dsh@0.2.0-rc.2` peer dependency; historical `0.2.0-rc.2.plugin.*` prereleases remain documented in `CHANGELOG.md`.
 
 ## Runtime security model
 

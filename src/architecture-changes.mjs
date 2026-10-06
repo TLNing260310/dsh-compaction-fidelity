@@ -1,10 +1,10 @@
 // Git + content-hash change detection for folder-scoped architecture documents.
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { architectureHash, atomicWriteArchitectureFile } from "./architecture-io.mjs";
 import { countChangedFilesSince } from "./architecture-doc.mjs";
-import { buildIndex } from "./project-index.mjs";
+import { buildIndex, isSensitiveIndexPath } from "./project-index.mjs";
 
 const SEMANTIC_EXTENSIONS = new Set([
   ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte",
@@ -58,12 +58,19 @@ function gitOutput(root, args, timeoutMs = 5000) {
   }
 }
 
+export function gitRepoCacheSize() {
+  return gitRepoCache.size;
+}
+
+export function resetGitRepoCache() {
+  gitRepoCache.clear();
+}
+
 export function isGitRepository(root) {
   const key = resolve(root);
   if (gitRepoCache.has(key)) return gitRepoCache.get(key);
   const output = gitOutput(key, ["rev-parse", "--is-inside-work-tree"]);
   const value = output !== null && output.trim() === "true";
-  gitRepoCache.set(key, value);
   if (!gitRepoCache.has(key) && gitRepoCache.size >= MAX_GIT_REPO_CACHE) {
     const oldest = gitRepoCache.keys().next().value;
     if (oldest !== undefined) gitRepoCache.delete(oldest);
@@ -161,18 +168,16 @@ export function writeArchitectureBaseline(cwd, scope, baseline, indexDir = ".dsh
   writeBaselineStore(cwd, indexDir, store);
 }
 
-export function computeArchitectureBaseline(cwd, scope, options = {}) {
+/**
+ * Build a baseline entry from an already-computed project index, so a refresh
+ * can document and baseline the same filtered file snapshot.
+ */
+export function architectureBaselineFromIndex(cwd, scope, index, options = {}) {
   const normalizedScope = normalizeRel(scope) || ".";
   const scopeRoot = normalizedScope === "." ? cwd : join(cwd, normalizedScope);
   const filter = typeof options.filterFile === "function" ? options.filterFile : null;
-  const index = buildIndex(scopeRoot, {
-    indexDir: options.indexDir ?? ".dsh/compaction-fidelity",
-    maxFiles: options.maxFiles ?? 20000,
-    maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
-    write: false,
-  });
   const files = {};
-  for (const file of index.files ?? []) {
+  for (const file of index?.files ?? []) {
     const relativeFile = normalizeRel(file.p);
     if (!isSemanticFile(relativeFile)) continue;
     if (options.docName && basename(relativeFile) === options.docName) continue;
@@ -194,8 +199,22 @@ export function computeArchitectureBaseline(cwd, scope, options = {}) {
   return { at: Date.now(), head: gitInfo?.head ?? null, gitRoot: gitInfo?.root ?? null, files };
 }
 
-function walkSemanticFiles(root, scope, maxFiles, filter) {
+export function computeArchitectureBaseline(cwd, scope, options = {}) {
+  const normalizedScope = normalizeRel(scope) || ".";
+  const scopeRoot = normalizedScope === "." ? cwd : join(cwd, normalizedScope);
+  const index = buildIndex(scopeRoot, {
+    indexDir: options.indexDir ?? ".dsh/compaction-fidelity",
+    maxFiles: options.maxFiles ?? 20000,
+    maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
+    write: false,
+  });
+  return architectureBaselineFromIndex(cwd, normalizedScope, index, options);
+}
+
+function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
   const out = [];
+  const maxFileBytes = Number.isFinite(options.maxFileBytes) && options.maxFileBytes > 0 ? options.maxFileBytes : 1024 * 1024;
+  let truncated = false;
   const base = scope === "." ? root : join(root, scope);
   const stack = [base];
   while (stack.length > 0 && out.length < maxFiles) {
@@ -204,10 +223,14 @@ function walkSemanticFiles(root, scope, maxFiles, filter) {
     try {
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
+      truncated = true;
       continue;
     }
     for (const entry of entries) {
-      if (out.length >= maxFiles) break;
+      if (out.length >= maxFiles) {
+        truncated = true;
+        break;
+      }
       if (entry.name.startsWith(".")) continue;
       if (entry.isDirectory()) {
         if (IGNORE_DIRS.has(entry.name)) continue;
@@ -217,34 +240,55 @@ function walkSemanticFiles(root, scope, maxFiles, filter) {
       if (!entry.isFile()) continue;
       const relativeFile = normalizeRel(join(dir, entry.name).slice(root.length + 1));
       if (!isSemanticFile(relativeFile)) continue;
+      if (isSensitiveIndexPath(relativeFile)) continue;
       if (typeof filter === "function" && !filter(relativeFile)) continue;
       try {
         const stat = statSync(join(dir, entry.name));
+        if (stat.size > maxFileBytes) {
+          truncated = true;
+          continue;
+        }
         out.push({ file: relativeFile, size: stat.size, mtimeMs: stat.mtimeMs, absolute: join(dir, entry.name) });
       } catch {
-        // ignore unreadable files
+        truncated = true;
       }
     }
   }
-  return out;
+  return { files: out, truncated };
 }
 
 function computeCurrentHashes(cwd, scope, baseline, options) {
-  const maxHashFiles = options.maxHashFiles ?? 3000;
-  const files = walkSemanticFiles(cwd, scope, options.maxFiles ?? 20000, options.filterFile);
-  const current = new Map();
-  for (const entry of files) {
+  const maxHashFiles = Number.isInteger(options.maxHashFiles) && options.maxHashFiles > 0 ? options.maxHashFiles : 3000;
+  const maxHashBytes = Number.isInteger(options.maxHashBytes) && options.maxHashBytes > 0 ? options.maxHashBytes : 32 * 1024 * 1024;
+  const walk = walkSemanticFiles(cwd, scope, options.maxFiles ?? 20000, options.filterFile, { maxFileBytes: options.maxFileBytes ?? 1024 * 1024 });
+  const rank = (entry) => {
     const previous = baseline.files?.[entry.file] ?? null;
-    const sizeChanged = previous === null || previous.size !== entry.size;
-    const mtimeChanged = previous === null || previous.mtimeMs === undefined || entry.mtimeMs > previous.mtimeMs + 1000;
-    if (files.length > maxHashFiles && !sizeChanged && !mtimeChanged) continue;
+    if (previous === null) return 2;
+    const sizeChanged = previous.size !== entry.size;
+    const mtimeChanged = previous.mtimeMs === undefined || entry.mtimeMs > previous.mtimeMs + 1000;
+    return sizeChanged || mtimeChanged ? 1 : 0;
+  };
+  const ordered = [...walk.files].sort((left, right) => rank(right) - rank(left));
+  const current = new Map();
+  let hashedBytes = 0;
+  let truncated = walk.truncated;
+  for (const entry of ordered) {
+    if (current.size >= maxHashFiles || hashedBytes >= maxHashBytes) {
+      truncated = true;
+      break;
+    }
+    if (hashedBytes + entry.size > maxHashBytes) {
+      truncated = true;
+      continue;
+    }
     try {
       current.set(entry.file, { hash: architectureHash(readFileSync(entry.absolute, "utf8")), size: entry.size });
+      hashedBytes += entry.size;
     } catch {
-      // ignore unreadable files
+      truncated = true;
     }
   }
-  return current;
+  return { current, truncated };
 }
 
 function scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold) {
@@ -286,7 +330,7 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
       const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
       return { method: "git", score: scored.score, changedFiles, forced: scored.forced, baselineFound: true };
     }
-    const current = computeCurrentHashes(cwd, scope, baseline, options);
+    const { current, truncated } = computeCurrentHashes(cwd, scope, baseline, options);
     const changedFiles = [];
     const lineMap = new Map();
     let forced = false;
@@ -297,8 +341,32 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
       lineMap.set(file, 0);
       if (previous !== null && fileWeight(file) >= 3 && Math.abs((entry.size ?? 0) - (previous.size ?? 0)) >= 4096) forced = true;
     }
+    if (!truncated) {
+      for (const [file, previous] of Object.entries(baseline.files ?? {})) {
+        if (!inScope(file, scope) || !isSemanticFile(file)) continue;
+        if (typeof filter === "function" && !filter(file)) continue;
+        if (current.has(file)) continue;
+        const absolute = join(cwd, file);
+        if (!existsSync(absolute)) {
+          changedFiles.push(file);
+          lineMap.set(file, 0);
+          continue;
+        }
+        try {
+          const stat = statSync(absolute);
+          const sizeChanged = previous.size !== stat.size;
+          const mtimeChanged = previous.mtimeMs === undefined || stat.mtimeMs > previous.mtimeMs + 1000;
+          if (sizeChanged || mtimeChanged) {
+            changedFiles.push(file);
+            lineMap.set(file, 0);
+          }
+        } catch {
+          // unreadable files are not deletions
+        }
+      }
+    }
     const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
-    return { method: "hash", score: scored.score, changedFiles, forced: forced || scored.forced, baselineFound: true };
+    return { method: "hash", score: scored.score, changedFiles, forced: forced || scored.forced, baselineFound: true, incomplete: truncated };
   }
   const sinceMs = Number.isFinite(options.sinceMs) ? options.sinceMs : Date.now();
   const count = countChangedFilesSince(cwd, scope, sinceMs, { maxFiles: options.maxFiles, exclude: [docName], filterFile: filter });

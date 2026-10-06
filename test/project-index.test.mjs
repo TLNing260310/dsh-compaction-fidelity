@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { anchorsForFile, briefForRoot, buildIndex, computeAnchors, loadIndex, searchIndex, updateAnchorsForFiles, verifyIndex } from '../src/project-index.mjs';
+import { anchorsForFile, briefForRoot, buildIndex, computeAnchors, loadIndex, purgeIndex, searchIndex, updateAnchorsForFiles, verifyIndex } from '../src/project-index.mjs';
 import { isSafeRelativePath } from '../src/util.mjs';
 
 function fixture() {
@@ -77,3 +77,31 @@ test('builds a persistent Compaction-Fidelity index, anchors, brief, search, and
   }
 });
 
+
+test('rejects a linked parent for index writes and purge', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-index-link-'));
+  const outside = mkdtempSync(join(tmpdir(), 'compaction-fidelity-index-outside-'));
+  try {
+    writeFileSync(join(root, 'package.json'), '{}', 'utf8');
+    const externalDir = join(outside, 'compaction-fidelity');
+    mkdirSync(externalDir, { recursive: true });
+    const sentinel = join(externalDir, 'sentinel.txt');
+    writeFileSync(sentinel, 'keep', 'utf8');
+    try {
+      symlinkSync(outside, join(root, '.dsh'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EACCES') {
+        t.skip('symlink creation is not permitted on this platform');
+        return;
+      }
+      throw error;
+    }
+    assert.throws(() => buildIndex(root, { indexDir: '.dsh/compaction-fidelity' }), /symbolic link|junction|escapes workspace/);
+    assert.throws(() => purgeIndex(root, '.dsh/compaction-fidelity'), /symbolic link|junction|escapes workspace/);
+    assert.equal(readFileSync(sentinel, 'utf8'), 'keep');
+  } finally {
+    rmSync(join(root, '.dsh'), { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

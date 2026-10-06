@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readJsonIfExists, writeJsonSync } from './util.mjs';
+import { assertWorkspaceContained, readJsonIfExists, writeJsonSync } from './util.mjs';
 
 export const MASTER_STATE_KEY = Symbol.for('dsh-compaction-fidelity/state');
 export const DEFAULT_INDEX_DIR = '.dsh/compaction-fidelity';
@@ -139,6 +139,8 @@ export function defaultRuntimeState(overrides = {}) {
     summaryLanguage: overrides.summaryLanguage ?? 'auto',
     summaryMaxTokens: Number.isInteger(overrides.summaryMaxTokens) && overrides.summaryMaxTokens > 0 ? overrides.summaryMaxTokens : 65536,
     compactionRetries: Number.isInteger(overrides.compactionRetries) && overrides.compactionRetries >= 0 ? overrides.compactionRetries : 1,
+    anchors: overrides.anchors !== false,
+    anchorsPerFile: Number.isInteger(overrides.anchorsPerFile) && overrides.anchorsPerFile > 0 ? overrides.anchorsPerFile : 8,
     indexDir: overrides.indexDir ?? DEFAULT_INDEX_DIR,
     updatedAt: overrides.updatedAt ?? new Date().toISOString(),
   };
@@ -160,12 +162,21 @@ export function homeStatePath() {
 }
 
 export function workspaceStatePath(cwd, indexDir = DEFAULT_INDEX_DIR) {
-  return join(cwd, indexDir, 'state.json');
+  const file = join(cwd, indexDir, 'state.json');
+  assertWorkspaceContained(cwd, file);
+  return file;
 }
 
 export function readPersistedState({ cwd, indexDir = DEFAULT_INDEX_DIR } = {}) {
   const home = readJsonIfExists(homeStatePath(), null);
-  const workspace = cwd ? readJsonIfExists(workspaceStatePath(cwd, indexDir), null) : null;
+  let workspace = null;
+  if (cwd) {
+    try {
+      workspace = readJsonIfExists(workspaceStatePath(cwd, indexDir), null);
+    } catch {
+      workspace = null;
+    }
+  }
   return { home, workspace };
 }
 
@@ -200,6 +211,8 @@ function finalizeRuntimeState(base, { workspace, home, globalState }) {
     compactionRetries: Number.isInteger(merged.compactionRetries) ? merged.compactionRetries : (Number.isInteger(base.compactionRetries) ? base.compactionRetries : baseDefaults.compactionRetries),
     summaryProvider: merged.summaryProvider ?? base.summaryProvider,
     summaryModel: merged.summaryModel ?? base.summaryModel,
+    anchors: merged.anchors !== false,
+    anchorsPerFile: Number.isInteger(merged.anchorsPerFile) && merged.anchorsPerFile > 0 ? merged.anchorsPerFile : 8,
     enabled: !isMasterDisabled() && merged.enabled !== false,
   };
 }

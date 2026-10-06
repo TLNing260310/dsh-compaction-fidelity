@@ -111,6 +111,23 @@ export function createWorkspaceFileFilter(registry, scope) {
   };
 }
 
+/**
+ * Resolve the managed architecture document for one scope. A registered
+ * scope controls both the document name and whether that document may be
+ * read or injected; excluded documents return null instead of falling back
+ * to the default name. Unregistered scopes keep the previous default-document
+ * behavior.
+ */
+export function managedDocTarget(registry, scope, fallbackDoc = "ARCHITECTURE.md") {
+  const normalizedScope = normalizeScope(scope);
+  if (normalizedScope === null) return null;
+  const entry = registry?.scopes?.[normalizedScope];
+  const docName = typeof entry?.doc === "string" && /^[\w.-]+\.md$/i.test(entry.doc) ? entry.doc : fallbackDoc;
+  const workspacePath = normalizedScope === "." ? docName : `${normalizedScope}/${docName}`;
+  if (!createWorkspaceFileFilter(registry, normalizedScope)(workspacePath)) return null;
+  return { scope: normalizedScope, docName, relative: workspacePath };
+}
+
 function normalizeEntry(entry) {
   const rawInclude = Array.isArray(entry?.include) ? entry.include : [];
   const include = toRuleList(rawInclude);

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -29,29 +29,121 @@ if (sourceManifest.name !== packageName) {
   process.exit(2);
 }
 
-mkdirSync(join(home, "plugins"), { recursive: true });
-if (existsSync(target)) {
-  const targetManifestPath = join(target, "package.json");
-  const samePackage = existsSync(targetManifestPath) && JSON.parse(readFileSync(targetManifestPath, "utf8")).name === packageName;
-  if (!samePackage && !args.includes("--force")) {
-    console.error(`refusing to replace ${target}: it is not ${packageName}; pass --force to override`);
-    process.exit(2);
-  }
-  rmSync(target, { recursive: true, force: true });
-}
-if (useLink) {
-  symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir");
-} else {
-  cpSync(source, target, {
-    recursive: true,
-    filter: (file) => !/[\\/](node_modules|\.git|\.dsh)([\\/]|$)/.test(file) && !/[\\/]\.tmp/.test(file),
-  });
+function isInside(parent, child) {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+mkdirSync(join(home, "plugins"), { recursive: true });
+const sourceReal = realpathSync(source);
+const targetReal = existsSync(target) ? realpathSync(target) : join(realpathSync(dirname(target)), basename(target));
+if (sourceReal === targetReal || isInside(sourceReal, targetReal) || isInside(targetReal, sourceReal)) {
+  console.error(`refusing overlapping source and target: source=${sourceReal} target=${targetReal}`);
+  process.exit(2);
+}
+
+function patternToRegExp(pattern) {
+  const normalized = String(pattern ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
+  let out = "";
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    if (char === "*") {
+      if (normalized[index + 1] === "*") {
+        out += ".*";
+        index += 1;
+        if (normalized[index + 1] === "/") index += 1;
+      } else {
+        out += "[^/]*";
+      }
+      continue;
+    }
+    if (char === "?") {
+      out += "[^/]";
+      continue;
+    }
+    out += /[|\\{}()[\]^$+?.]/.test(char) ? `\\${char}` : char;
+  }
+  return new RegExp(`^${out}$`);
+}
+
+const COPY_IGNORE_RE = /(^|[\\/])(node_modules|\.git|\.dsh|\.pnpm|\.tmp)([\\/]|$)/i;
+const COPY_SECRET_RE = /(^|[\\/])(\.env(\..*)?|\.npmrc|\.netrc|\.pypirc|id_rsa(\.pub)?|id_ed25519(\.pub)?|credentials(\..*)?|secrets?(\..*)?)$/i;
+const packagePatterns = Array.isArray(sourceManifest.files) ? sourceManifest.files : [];
+function packageFileAllowed(rel) {
+  if (rel === "package.json") return true;
+  return packagePatterns.some((pattern) => patternToRegExp(pattern).test(rel));
+}
+function copyFilter(file) {
+  if (file === source) return true;
+  const rel = relative(source, file).replace(/\\/g, "/");
+  if (rel.length === 0) return true;
+  if (COPY_IGNORE_RE.test(rel) || COPY_SECRET_RE.test(rel)) return false;
+  let stat;
+  try {
+    stat = statSync(file);
+  } catch {
+    return false;
+  }
+  if (stat.isDirectory()) return true;
+  return packageFileAllowed(rel);
+}
+function backupTarget(targetPath, backupPath) {
+  const stat = lstatSync(targetPath);
+  if (stat.isSymbolicLink()) return readlinkSync(targetPath);
+  cpSync(targetPath, backupPath, {
+    recursive: true,
+    filter: (file) => !/(^|[\\/])(node_modules|\.git|\.pnpm|\.tmp)([\\/]|$)/.test(String(file)),
+  });
+  return null;
+}
+function restoreTarget(targetPath, backupPath, linkTarget) {
+  if (existsSync(targetPath)) rmSync(targetPath, { recursive: true, force: true });
+  if (linkTarget !== null) {
+    symlinkSync(linkTarget, targetPath, process.platform === "win32" ? "junction" : "dir");
+  } else if (existsSync(backupPath)) {
+    renameSync(backupPath, targetPath);
+  }
+}
+
+mkdirSync(join(home, "plugins"), { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const backupDir = join(home, "plugins", ".backups", stamp);
 mkdirSync(backupDir, { recursive: true });
-for (const name of ["package.json", "cordis.patch.yml", "cordis.yml", "pnpm-workspace.yaml"]) {
+const packageBackup = join(backupDir, "package");
+let targetLink = null;
+if (existsSync(target)) {
+  targetLink = backupTarget(target, packageBackup);
+}
+
+try {
+  if (useLink) {
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+    symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir");
+  } else {
+    const staging = join(home, "plugins", `.dsh-compaction-fidelity.install-${stamp}`);
+    rmSync(staging, { recursive: true, force: true });
+    mkdirSync(staging, { recursive: true });
+    try {
+      cpSync(source, staging, { recursive: true, filter: copyFilter });
+      const stagedManifest = JSON.parse(readFileSync(join(staging, "package.json"), "utf8"));
+      if (stagedManifest.name !== packageName || stagedManifest.version !== sourceManifest.version) {
+        throw new Error(`staged package manifest mismatch: ${stagedManifest.name}@${stagedManifest.version}`);
+      }
+      if (!existsSync(join(staging, "lib", "client.js"))) throw new Error("staged package is missing lib/client.js");
+      if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+      renameSync(staging, target);
+    } catch (error) {
+      rmSync(staging, { recursive: true, force: true });
+      throw error;
+    }
+  }
+} catch (error) {
+  restoreTarget(target, packageBackup, targetLink);
+  console.error(`install failed before profile update: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
+for (const name of ["package.json", "cordis.patch.yml", "cordis.yml", "pnpm-workspace.yaml", "pnpm-lock.yaml"]) {
   const file = join(profileDir, name);
   if (existsSync(file)) cpSync(file, join(backupDir, name));
 }

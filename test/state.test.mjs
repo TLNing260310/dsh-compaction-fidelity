@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultRuntimeState, isMasterDisabled, mergeRuntimeState, normalizeThreshold, parseTokenCount, resolveAbsoluteThresholdPlan, resolveRetainTokens, resolveThresholdPlan } from '../src/state.mjs';
+import { defaultRuntimeState, isMasterDisabled, mergeRuntimeState, normalizeThreshold, parseTokenCount, resolveAbsoluteThresholdPlan, resolveRetainTokens, resolveThresholdPlan, savePersistedState } from '../src/state.mjs';
 
 test('parseTokenCount supports k/m and raw integers', () => {
   assert.equal(parseTokenCount('256k'), 256000);
@@ -114,3 +114,32 @@ test('default summary output budget matches official 65536', () => {
 
 
 
+
+test('workspace state writes reject linked parents', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'compaction-fidelity-state-link-'));
+  const outside = mkdtempSync(join(tmpdir(), 'compaction-fidelity-state-outside-'));
+  const previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = cwd;
+  try {
+    try {
+      symlinkSync(outside, join(cwd, '.dsh'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EACCES') {
+        t.skip('symlink creation is not permitted on this platform');
+        return;
+      }
+      throw error;
+    }
+    assert.throws(
+      () => savePersistedState({ threshold: '350k' }, { cwd, indexDir: '.dsh/compaction-fidelity', writeWorkspace: true }),
+      /symbolic link|junction|escapes workspace/,
+    );
+    assert.equal(existsSync(join(outside, 'compaction-fidelity', 'state.json')), false);
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousHome;
+    rmSync(join(cwd, '.dsh'), { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

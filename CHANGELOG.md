@@ -1,7 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
+Hardening release on top of the published 0.3.0 tag. The `v0.3.0` tag remains unchanged.
+
+### Security and containment
+
+- Rejected linked-parent escapes for project index, anchors, workspace state, purge, and architecture stores; shared one containment helper instead of the previous weak local check.
+- Refused source/target overlap before `install-desktop.mjs` deletes anything, copied only packaged files, excluded secrets and unrelated workspace files, backed up the previous package, and restored it when staging validation failed.
+
+### Architecture retrieval
+
+- Fixed a pre-step scope-adoption reference that could throw `target is not defined`; added an actual pre-step hook regression test for single-candidate consent, ambiguity, and decline.
+- Routed architecture-document injection through the versioned managed-scope registry, including `include`/`exclude` rules and per-scope document names.
+- Restored project-index anchors and runtime anchor propagation.
+- Made architecture refresh render its document and baseline from one fresh index snapshot, so a refresh cannot pair a stale document with a new baseline; command/tool document paths now resolve registered per-scope document names.
+
+### Change detection and scheduling
+
+- Added non-Git deletion detection while explicitly suppressing deletion reports when the scan is incomplete.
+- Added shared sensitive-file filtering plus per-file, total-byte, file-count, and scan budgets to semantic hash detection.
+- Cancelled queued index timers on plugin disposal, re-checked lifecycle and master-switch state inside callbacks, bounded session maps, and made the Git-repository cache cap reachable.
+
+### Injection budget
+
+- Counted the outer `<pinned_constraints>` wrapper in the global injection budget.
+
+### Verification
+
+- `npm run check` passes; full suite is 104 tests, 103 pass, 1 environment-dependent skip, with optional DSH-peer integration tests covering the real hook, refresh, injection, scheduling, budget, and installer regressions.
+- npm publication and real three-backend paired evaluation remain pending and are not claimed.
+
+- Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.
+- Recorded the isolated Profile smoke result: local 0.3.0 install, config composition, installed compression smoke with mock LLM, master-switch disable check, removal, and restart-config check passed; the running daily Desktop profile remains on 1.25 until it is closed.
 - Added a committed public `0.3.0` release-status document and replaced README links that previously pointed at the uncommitted internal audit report.
 - Recorded the isolated Profile smoke result: local 0.3.0 install, config composition, installed compression smoke with mock LLM, master-switch disable check, removal, and restart-config check passed; the running daily Desktop profile remains on 1.25 until it is closed.
 
