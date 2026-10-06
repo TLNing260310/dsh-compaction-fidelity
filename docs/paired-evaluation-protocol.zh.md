@@ -10,6 +10,13 @@
 
 保存冻结输入与项目快照的 SHA-256、后端/配置/模板版本、随机种子（如 API 支持）。中文、英文、中英混合按预先指定任务语言分层，本插件检测出的语言只能作为另一列，避免检测器替自己选择有利分组。失败、截断、取消和重试全部保留。
 
+## 当前环境准备状态（2026-10-06）
+
+- 官方 basic 随 Desktop 2.0.17 / Harness 0.2.0-rc.2 内嵌，可直接在独立 Profile 中启用。
+- 第三后端 `@helibeiqi/dsh-compaction-pro@0.2.0` 当前不在 npm（npm 查询为 404），必须从 GitHub 源码安装。已在临时 `DSH_HOME` 的自定义 Profile 中执行 `dsh plugin --profile evalpro add github:helibeiqi/dsh-compaction-pro` 成功，`dsh --profile evalpro --dump-config` 退出码 0 并出现 `compaction-pro` 行；安装过程报告 peer dependency 警告，评测时必须把该警告和实际安装版本一并记录，不能忽略。
+- 本插件 `0.3.1` 的本地 tarball 已在同类临时 Profile 中安装成功，`--dump-config` 退出码 0 并出现 `compaction-fidelity` 行。
+- 以上只是安装/组合准备，不是压缩效果结果。真实压缩对比尚未执行，仍需冻结 provider/model/预算、独立工作区副本和操作者授权；不要以安装成功代替 A/B 结论。
+
 ## 任务矩阵
 
 每种语言至少 10 个独立任务，每任务重复 3 次：三个后端合计 270 次压缩及后续执行。可先做 3 个任务/语言的试运行来校验流程，但不能据此发布“同类领先”的结论。
