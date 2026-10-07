@@ -48,6 +48,33 @@ rather than assumed, and are now covered by characterisation tests in
 - Sentence terminators are preserved through segmentation, so a trailing question mark is still visible to the gate.
 - Two shapes stay documented gaps rather than fixes: a pure conditional (如果…就…) is dropped instead of pinned, and a withdrawal naming two objects in one clause (不再需要 docker 和 tabs) retires neither.
 
+### Architecture injection
+
+- Summary injection now takes a bounded *current view* of each managed
+  ARCHITECTURE.md instead of the head of the file: structure coordinates first,
+  then active requirements, then whole update blocks newest-first. An item that
+  does not fit is reported with a readable pointer instead of being cut in half.
+- A later withdrawal in the update log retires the earlier requirement, so a rule
+  the user retired stops being presented as non-negotiable while its text stays
+  retrievable in the file.
+- The reader checks the document size before reading, and an unparsable or
+  oversized document is skipped rather than sliced into the prompt.
+
+### Narrative language
+
+- The summary language now follows the *user's* recent messages instead of every
+  role's text, so a tool result or an English assistant paragraph can no longer
+  outvote the person being summarised.
+- A Chinese request is no longer reclassified as bilingual merely because it
+  carries English identifiers: content inside code spans and fences is ignored,
+  and identifier-shaped tokens are counted separately from prose-shaped words.
+- The bilingual rule no longer asks for an English narrative. It asks for the
+  dominant language of the recent user messages and falls back to the most recent
+  message when the two are even, while exact values stay verbatim.
+- The ledger records `languageBasis` (`recent-user`, `all-user`,
+  `conversation-fallback`, `empty`) so a language decision can be traced back to
+  the window that produced it.
+
 ### Verification in this round
 
 

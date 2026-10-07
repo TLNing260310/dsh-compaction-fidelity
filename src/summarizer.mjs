@@ -91,6 +91,73 @@ export function detectLanguage(texts) {
 
 
 
+const FENCE_BLOCK_RE = /```[\s\S]*?```/g;
+const INLINE_CODE_RE = /`[^`]*`/g;
+const LATIN_WORD_RE = /^[A-Za-z][A-Za-z']*$/;
+export const LANGUAGE_WINDOW = 6;
+
+/**
+ * Count what actually decides the narrative language: Chinese characters used as
+ * prose, and Latin words used as prose. Fenced blocks, inline code and
+ * identifier-shaped tokens are excluded, because a Chinese request full of paths
+ * and commands is still a Chinese request, while an English request quoting one
+ * Chinese error string is still an English request.
+ */
+export function languageProfile(texts) {
+  let cjk = 0;
+  let latinProse = 0;
+  let latinIdentifiers = 0;
+  for (const text of texts ?? []) {
+    const value = String(text ?? '').replace(FENCE_BLOCK_RE, ' ').replace(INLINE_CODE_RE, ' ');
+    cjk += (value.match(CJK_RE) ?? []).length;
+    for (const raw of value.split(/\s+/)) {
+      const token = raw.replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9]+$/, '');
+      if (token.length === 0) continue;
+      if (LATIN_WORD_RE.test(token)) latinProse += 1;
+      else if (/[A-Za-z]/.test(token)) latinIdentifiers += 1;
+    }
+  }
+  return { cjk, latinProse, latinIdentifiers };
+}
+
+/**
+ * Decide which language the narrative should use. Returns null when the input
+ * carries no signal, so the caller can widen its window instead of guessing.
+ * "mixed" now means genuinely bilingual: Chinese prose carrying English
+ * identifiers classifies as Chinese, not as mixed.
+ */
+export function classifyUserLanguage(profile) {
+  const cjk = Number(profile?.cjk ?? 0);
+  const latinProse = Number(profile?.latinProse ?? 0);
+  if (cjk === 0 && latinProse === 0) return null;
+  if (cjk === 0) return 'en';
+  if (latinProse === 0) return 'zh';
+  if (cjk >= 12 && cjk >= latinProse) return 'zh';
+  if (latinProse >= 12 && latinProse >= cjk * 2) return 'en';
+  if (cjk >= 6 && latinProse >= 6) return 'mixed';
+  return cjk * 2 >= latinProse ? 'zh' : 'en';
+}
+
+/**
+ * Language of the user, not of the conversation. Assistant and tool text is
+ * mostly English identifiers, and letting it vote is what used to turn a Chinese
+ * session into a bilingual one and then force an English narrative.
+ */
+export function resolveUserLanguage(described, options = {}) {
+  const window = Number.isInteger(options.window) && options.window > 0 ? options.window : LANGUAGE_WINDOW;
+  const entries = Array.isArray(described) ? described : [];
+  const users = entries.filter((entry) => entry?.role === 'user' && String(entry.text ?? '').trim().length > 0);
+  const attempt = (list, basis) => {
+    const profile = languageProfile(list.map((entry) => entry.text));
+    const language = classifyUserLanguage(profile);
+    return language === null ? null : { language, basis, profile, sampled: list.length };
+  };
+  return attempt(users.slice(-window), 'recent-user')
+    ?? attempt(users, 'all-user')
+    ?? attempt(entries, 'conversation-fallback')
+    ?? { language: 'en', basis: 'empty', profile: { cjk: 0, latinProse: 0, latinIdentifiers: 0 }, sampled: 0 };
+}
+
 function uniqueStrings(values, limit) {
 
   return uniqueBy(values.filter((value) => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim()), (value) => value).slice(0, limit);
@@ -105,6 +172,8 @@ export function extractLedger(messages, options = {}) {
 
   const userMessages = described.filter((entry) => entry.role === 'user');
 
+  const languageDecision = resolveUserLanguage(described);
+
   const allText = described.map((entry) => entry.text).join('\n');
 
   const corrections = userMessages.filter((entry) => CORRECTION_RE.test(entry.text));
@@ -115,7 +184,9 @@ export function extractLedger(messages, options = {}) {
 
     generatedAt: new Date().toISOString(),
 
-    language: detectLanguage(described.map((entry) => entry.text)),
+    language: languageDecision.language,
+
+    languageBasis: languageDecision.basis,
 
     userQuotes: prioritizedUsers.map((entry) => clampText(entry.text, 2400)),
 
@@ -458,7 +529,7 @@ export function buildSummaryInstructionWithDiagnostics({
   const languageRule = resolvedLanguage === 'zh'
     ? '使用中文撰写检查点；所有路径、命令、错误串、标识符、数值必须原样保留，禁止翻译。'
     : resolvedLanguage === 'bilingual'
-      ? 'Write the main prose in English; add concise Chinese notes for user-facing constraints. Preserve exact values verbatim.'
+      ? 'Match the language mixture the user actually writes. Write the main prose in whichever of Chinese or English dominates their recent messages, keep the other language only for the terms they used it for, and if the two are even follow the most recent user message. Paths, commands, identifiers, error strings and numeric values must stay verbatim and must never be translated.'
       : 'Write concise English engineering prose. The `verbatim_user_input` and `exact_value_ledger` entries MUST stay in their original language and MUST NOT be translated.';
   const acknowledgmentRule = 'This checkpoint is a lossy index, not a complete transcript. If a required fact is missing or uncertain, say so in "Critical Context"/"Compaction-Fidelity Anchors" and retrieve it with the available retrieval tools instead of guessing. Architecture facts are only locators here: after resuming, re-read `.dsh/compaction-fidelity/project.txt` and `.dsh/compaction-fidelity/PROJECT.md` before relying on them as ground truth.';
   const { fixedText, blocks } = summaryInstructionParts({

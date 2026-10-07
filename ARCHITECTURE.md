@@ -7,11 +7,11 @@ generatedAt: "2026-10-07T02:51:17.495Z"
 
 <architecture_attestation>
 {
-  "revision": 2,
+  "revision": 3,
   "structureHash": "158d2e3dc1aa97627434ab6dc1350d191c4831a8c3e05eee296e5e59e807cd9f",
-  "updateLogHash": "2358e08ed22eb2fc1fae66dc4df554d85b22758be408cc51480285ff71a5ae07",
-  "entryCount": 1,
-  "updatedAt": "2026-10-07T03:00:50.522Z"
+  "updateLogHash": "1ceaf0e04ae2e8a50beb1526aa9b3e62fc02f53c76e65b4f91db92adf73d5a49",
+  "entryCount": 2,
+  "updatedAt": "2026-10-07T03:58:13.926Z"
 }
 </architecture_attestation>
 
@@ -344,6 +344,26 @@ generatedAt: "2026-10-07T02:51:17.495Z"
   ],
   "constraints": [
     "不得注入半截更新块、JSON 或约束；只允许整条或指针"
+  ]
+}
+```
+</architecture_update>
+
+<architecture_update at="2026-10-07T03:58:13.925Z" scope=".">
+```json
+{
+  "at": "2026-10-07T03:58:13.925Z",
+  "scope": ".",
+  "summary": "S2：叙述语言跟随用户本人最近的发言，mixed 不再强制英文",
+  "changedFiles": [
+    "src/summarizer.mjs",
+    "test/language-following.test.mjs"
+  ],
+  "decisions": [
+    "标识符与散文词分开计数，代码块先剔除；混合只在双方都成规模时成立"
+  ],
+  "constraints": [
+    "显式语言设置优先于自动判定；精确值仍须逐字保留"
   ]
 }
 ```
