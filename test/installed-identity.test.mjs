@@ -114,8 +114,9 @@ test("a missing payload reports a reason instead of throwing", () => {
 test("the command reports identical, drift, and unreadable payloads by exit code", () => {
   const referenceRoot = makeTree({ "src/a.mjs": "a\n" });
   const payloadRoot = makeTree({ "src/a.mjs": "a\n" });
-  const args = ["--payload", payloadRoot, "--against", "worktree", "--source", referenceRoot];
-  assert.equal(main(args, { log: quiet, error: quiet }), 0);
+  // The profile leg depends on the machine, so this test asks for the
+  // payload-versus-reference answer only.
+  const args = ["--payload", payloadRoot, "--against", "worktree", "--source", referenceRoot, "--no-profile"];  assert.equal(main(args, { log: quiet, error: quiet }), 0);
 
   writeFileSync(join(payloadRoot, "src", "a.mjs"), "changed\n", "utf8");
   const lines = [];
@@ -201,4 +202,23 @@ test("a registered hotfix is reported on its own and is not drift", () => {
   assert.equal(registered.known[0].hotfix.source, "audit_outputs/dsh-target-hotfix-nmUNL7");
   const wrongHashes = applyHotfixes(result, [{ file: "src/index.mjs", originalHash: "9".repeat(64), patchedHash: "8".repeat(64) }]);
   assert.equal(wrongHashes.verdict, "DRIFT", "a registration with different hashes explains nothing");
+});
+
+test("package.json is always inside the manifest scope", () => {
+  const manifest = createManifestMatcher(["src/**", "README.md"]);
+  assert.equal(manifest("package.json"), true, "npm ships package.json whatever files says");
+  assert.equal(manifest("src/a.mjs"), true);
+  assert.equal(manifest("test/a.test.mjs"), false);
+  assert.equal(createManifestMatcher([]), null, "no manifest falls back to the ignore scope");
+});
+
+test("a registration without hashes explains nothing and UNKNOWN is never explained", () => {
+  const driftRow = { path: "src/index.mjs", status: STATUS.DIFFERS, referenceSha256: "1".repeat(64), payloadSha256: "2".repeat(64), line: 792 };
+  const driftResult = { verdict: "DRIFT", counts: { compared: 1 }, rows: [driftRow], differences: [driftRow] };
+  assert.equal(applyHotfixes(driftResult, [{ file: "src/index.mjs" }]).verdict, "DRIFT");
+  assert.equal(applyHotfixes(driftResult, [{ file: "src/index.mjs", originalHash: null, patchedHash: null }]).verdict, "DRIFT");
+  const unknownRow = { path: "src/index.mjs", status: STATUS.UNKNOWN, referenceSha256: null, payloadSha256: null };
+  const unknownResult = { verdict: "UNKNOWN", counts: { compared: 1, unknown: 1 }, rows: [unknownRow], differences: [unknownRow] };
+  assert.equal(applyHotfixes(unknownResult, [{ file: "src/index.mjs" }]).verdict, "UNKNOWN");
+  assert.equal(applyHotfixes(unknownResult, [{ file: "src/index.mjs", originalHash: "1", patchedHash: "2" }]).verdict, "UNKNOWN");
 });

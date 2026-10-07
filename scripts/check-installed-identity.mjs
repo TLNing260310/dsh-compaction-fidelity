@@ -117,9 +117,15 @@ function manifestPatternToRegExp(pattern) {
  * double-star covers the whole subtree, a leading double-star matches at any
  * depth, and a bare name matches one exact path.
  */
+export const MANIFEST_ALWAYS_INCLUDED = Object.freeze(["package.json"]);
+
 export function createManifestMatcher(patterns) {
   const list = (patterns ?? []).filter((pattern) => String(pattern ?? "").trim().length > 0).map((pattern) => manifestPatternToRegExp(pattern));
   if (list.length === 0) return null;
+  // npm ships package.json whatever `files` says, so a manifest-scoped comparison
+  // that dropped it would leave the entry points, exports and peer ranges
+  // unverified even though the payload matched the artifact.
+  for (const always of MANIFEST_ALWAYS_INCLUDED) list.push(manifestPatternToRegExp(always));
   return (relativePath) => {
     const posix = String(relativePath ?? "").replace(/\\/g, "/");
     return list.some((regex) => regex.test(posix));
@@ -450,9 +456,16 @@ export function applyHotfixes(result, entries) {
   const known = [];
   const unexplained = [];
   for (const row of result.differences) {
-    const match = list.find((entry) => entry.file === row.path
-      && (entry.originalHash ?? null) === (row.referenceSha256 ?? null)
-      && (entry.patchedHash ?? null) === (row.payloadSha256 ?? null));
+    // A registration explains a difference only when it carries both hashes and
+    // they match the row. An UNKNOWN row has no identity to match against, so a
+    // registration without hashes can never turn it into a pass.
+    const match = row.status === STATUS.UNKNOWN
+      ? undefined
+      : list.find((entry) => typeof entry.originalHash === "string" && entry.originalHash.length > 0
+        && typeof entry.patchedHash === "string" && entry.patchedHash.length > 0
+        && entry.file === row.path
+        && entry.originalHash === row.referenceSha256
+        && entry.patchedHash === row.payloadSha256);
     if (match === undefined) unexplained.push(row);
     else known.push({ row, hotfix: { reason: match.reason ?? null, source: match.source ?? null, registeredAt: match.registeredAt ?? null } });
   }
@@ -572,6 +585,8 @@ export function parseArguments(argv) {
       index += 1;
     } else if (argument === "--no-head") {
       options.head = null;
+    } else if (argument === "--no-profile") {
+      options.profile = false;
     } else if (argument === "--json") {
       options.json = true;
     } else if (argument === "--list") {
@@ -671,9 +686,11 @@ export function main(argv = process.argv.slice(2), io = {}) {
   if (options.hotfix !== null && hotfixes.ok !== true) fail("hotfix registry not usable (" + hotfixes.reason + "): " + options.hotfix);
   const primary = applyHotfixes(compareCollections(reference, payload), hotfixes.entries);
 
-  const profileInfo = options.profile !== null
-    ? { ok: true, path: resolve(options.profile), declared: null }
-    : resolveProfilePayload({});
+  const profileInfo = options.profile === false
+    ? { ok: false, reason: "skipped", detail: "the profile leg was not requested" }
+    : options.profile !== null
+      ? { ok: true, path: resolve(options.profile), declared: null }
+      : resolveProfilePayload({});
   // A profile that cannot be read is UNKNOWN, not "not applicable": the second
   // payload simply was not verified.
   let profileResult = profileInfo.ok === true
