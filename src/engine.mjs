@@ -14,6 +14,7 @@ import { buildFidelityProbes, evaluateFidelityGate } from './fidelity-gate.mjs';
 import { aggregateComparison as storedComparison, aggregateConstraints as storedConstraints, aggregateGate as storedGate } from './fingerprint-privacy.mjs';
 import { readArchitectureDoc } from './architecture-doc.mjs';
 import { managedDocTarget, readArchitectureRegistry, retrievalPolicyFor } from './architecture-registry.mjs';
+import { ARCHITECTURE_VIEW_TOTAL_CHARS, DEFAULT_VIEW_CHARS, MIN_VIEW_CHARS, architectureActiveState, buildArchitectureView, parseArchitectureDocument } from './architecture-view.mjs';
 import { assertWorkspaceContained } from './architecture-io.mjs';
 import { pickRetentionRange } from './range.mjs';
 import { mergeRuntimeState, normalizeThreshold, resolveAbsoluteThresholdPlan, resolveThresholdPlan } from './state.mjs';
@@ -532,7 +533,11 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         const scope = typeof doc.scope === "string" ? doc.scope : ".";
         const docName = typeof doc.docName === "string" ? doc.docName : "ARCHITECTURE.md";
         refreshScopes.set(scope, docName);
-        entries.push({ text: "### " + doc.relative + "\n" + clampText(doc.text, 4000), priority });
+        if (doc.truncated === true) {
+          this.ctx.logger?.warn?.("compaction-fidelity architecture document is too large to read: " + doc.relative);
+          return;
+        }
+        entries.push({ text: doc.text, relative: doc.relative, priority });
       };
       const readManagedDoc = (scope, fallbackDoc = "ARCHITECTURE.md") => {
         try {
@@ -575,15 +580,35 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
         for (const item of ordered.slice(0, 12)) addDoc(item.doc, 1);
       }
       addDoc(readManagedDoc("."), 2);
-      const maxTotal = 8000;
-      let used = 0;
+      // Each document contributes a bounded excerpt of whole items, so the
+      // newest update can never be pushed out by the head of the file and no
+      // half block is emitted when the budget runs out.
+      const maxTotal = ARCHITECTURE_VIEW_TOTAL_CHARS;
       const docLines = [];
       for (const entry of entries) {
-        const remaining = maxTotal - used;
-        if (remaining < 500) break;
-        const text = entry.text.length > remaining ? clampText(entry.text, remaining) : entry.text;
-        docLines.push(text);
-        used += text.length + 2;
+        const remaining = maxTotal - (docLines.length === 0 ? 0 : docLines.join("\n\n").length + 2);
+        if (remaining < MIN_VIEW_CHARS) {
+          this.ctx.logger?.warn?.("compaction-fidelity architecture excerpt skipped: " + entry.relative + " (" + remaining + " chars of budget remain)");
+          continue;
+        }
+        const parsed = parseArchitectureDocument(entry.text);
+        if (parsed.ok !== true) {
+          this.ctx.logger?.warn?.("compaction-fidelity architecture document skipped (" + parsed.reason + "): " + entry.relative);
+          continue;
+        }
+        const state = architectureActiveState(parsed);
+        const view = buildArchitectureView(entry.text, {
+          parsed,
+          relative: entry.relative,
+          maxChars: Math.min(DEFAULT_VIEW_CHARS, remaining),
+          activeConstraints: state.constraints,
+          retiredCounts: { retracted: state.retracted.length, superseded: state.superseded.length },
+        });
+        if (view.ok !== true || view.text.length === 0) continue;
+        docLines.push(view.text);
+        if (view.incomplete) {
+          this.ctx.logger?.warn?.("compaction-fidelity architecture excerpt for " + entry.relative + " omits " + view.omitted.length + " item(s)");
+        }
       }
       architectureDocs = docLines.join("\n\n");
       cognitionRefreshScopes = [...refreshScopes.entries()].map(([scope, docName]) => ({ scope, docName }));

@@ -4,6 +4,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { isSafeRelativePath, sha256, toPosix } from "./util.mjs";
 
 export const DEFAULT_ARCHITECTURE_DOC = "ARCHITECTURE.md";
+export const MAX_ARCHITECTURE_DOC_BYTES = 1048576;
+
 
 function messageText(message) {
   const content = message?.content;
@@ -102,7 +104,17 @@ export function architectureDocExists(root, relativeDir = ".", docName = DEFAULT
 export function readArchitectureDoc(root, relativeDir = ".", docName = DEFAULT_ARCHITECTURE_DOC) {
   const target = architectureDocExists(root, relativeDir, docName);
   if (target === null) return null;
-  return { ...target, text: readFileSync(target.absolute, "utf8") };
+  let bytes = 0;
+  try {
+    bytes = statSync(target.absolute).size;
+  } catch {
+    return { ...target, text: "", bytes: 0, truncated: true };
+  }
+  // Size is checked before reading so an oversized document cannot be pulled into
+  // memory only to be rejected afterwards; callers must treat truncated as
+  // unreadable instead of falling back to raw bytes.
+  if (bytes > MAX_ARCHITECTURE_DOC_BYTES) return { ...target, text: "", bytes, truncated: true };
+  return { ...target, text: readFileSync(target.absolute, "utf8"), bytes, truncated: false };
 }
 
 function attr(value) {

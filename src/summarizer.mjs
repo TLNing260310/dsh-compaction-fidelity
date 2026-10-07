@@ -1,4 +1,5 @@
 import { clampText, estimateTextTokens, uniqueBy } from './util.mjs';
+import { ARCHITECTURE_VIEW_TOTAL_CHARS, clampArchitectureViewText } from './architecture-view.mjs';
 
 
 
@@ -303,7 +304,7 @@ function summaryInstructionParts({ ledger, brief, anchors, ledgerText, constrain
     summaryBlock('exact_value_ledger', 0, ledgerText ? `<exact_value_ledger>\n${ledgerText}\n</exact_value_ledger>` : ''),
     summaryBlock('verbatim_user_input', 1, (ledger?.userQuotes?.length ?? 0) > 0 ? `<verbatim_user_input>\n${clampText((ledger.userQuotes ?? []).map((quote, index) => `[${index + 1}] ${quote}`).join('\n\n'), 7000)}\n</verbatim_user_input>` : ''),
     summaryBlock('pinned_constraints', 0, constraintsText ? `<pinned_constraints>\n${clampText(constraintsText, 2000)}\n</pinned_constraints>` : ''),
-    summaryBlock('architecture_retrieval_docs', 2, architectureDocs ? `<architecture_retrieval_docs>\n${clampText(architectureDocs, 8000)}\n</architecture_retrieval_docs>` : ''),
+    summaryBlock('architecture_retrieval_docs', 2, architectureDocs ? `<architecture_retrieval_docs>\n${clampArchitectureViewText(architectureDocs, ARCHITECTURE_VIEW_TOTAL_CHARS)}\n</architecture_retrieval_docs>` : ''),
     summaryBlock('cognition_refresh', 4, cognitionRefreshScopes.length > 0 ? `<cognition_refresh trigger="context_compaction">\n${clampText(formatCognitionRefreshDocs(cognitionRefreshScopes), 1000)}\n压缩结束后请刷新这些 ARCHITECTURE.md；可调用 compaction-fidelity-architecture action=refresh 或执行 /compaction-fidelity architecture refresh <scope>。\n</cognition_refresh>` : ''),
   ].filter((block) => block.text.length > 0);
   return { fixedText, blocks };

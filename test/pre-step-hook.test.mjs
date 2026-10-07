@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendArchitectureUpdate, renderArchitectureDoc } from '../src/architecture-doc.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -175,9 +176,19 @@ test('engine applies managed exclusions, runtime anchors, and the full pinned bu
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'engine-hook-fixture' }), 'utf8');
     writeFileSync(join(root, 'module', 'file.ts'), 'export const value = 1;\n', 'utf8');
     writeFileSync(join(root, 'module', 'ARCHITECTURE.md'), '# Module\n\nEXCLUDED_ARCHITECTURE_MARKER\n', 'utf8');
+    mkdirSync(join(root, 'later'), { recursive: true });
+    let thickDoc = renderArchitectureDoc({ scope: 'later' });
+    for (let index = 0; index < 4; index += 1) {
+      thickDoc = appendArchitectureUpdate(thickDoc, { scope: 'later', summary: 'filler-' + index + ' ' + 'x'.repeat(900) });
+    }
+    thickDoc = appendArchitectureUpdate(thickDoc, { scope: 'later', summary: 'NEWEST_ARCHITECTURE_UPDATE_MARKER' });
+    writeFileSync(join(root, 'later', 'ARCHITECTURE.md'), thickDoc, 'utf8');
     writeFileSync(join(root, '.dsh', 'compaction-fidelity', 'architecture-scopes.json'), JSON.stringify({
       version: 2,
-      scopes: { module: { doc: 'ARCHITECTURE.md', include: [], exclude: ['ARCHITECTURE.md'] } },
+      scopes: {
+        module: { doc: 'ARCHITECTURE.md', include: [], exclude: ['ARCHITECTURE.md'] },
+        later: { doc: 'ARCHITECTURE.md', include: [], exclude: [] },
+      },
     }), 'utf8');
     // Build the fixture index the way the plugin does: stamped with the current
     // read policy, so a policy-rejected cache cannot pass as plugin-produced.
@@ -225,6 +236,11 @@ test('engine applies managed exclusions, runtime anchors, and the full pinned bu
     }, agent, new AbortController().signal, runtime);
     assert.ok(capturedPrompt.includes('compaction_fidelity_project_brief'));
     assert.ok(!capturedPrompt.includes('EXCLUDED_ARCHITECTURE_MARKER'));
+    // An appended update log used to be unreachable: the file head was injected,
+    // so every later update fell outside the excerpt. The newest update must now
+    // reach the prompt, and the section coordinates must survive with it.
+    assert.ok(capturedPrompt.includes('NEWEST_ARCHITECTURE_UPDATE_MARKER'), 'the newest architecture update must be injected');
+    assert.ok(capturedPrompt.includes('7. Update Log'), 'architecture section coordinates must survive the excerpt');
     assert.ok(result.summary.some((block) => block.type === 'text' && block.text.startsWith('<pinned_constraints>')));
 
     let budgetPrompt = '';

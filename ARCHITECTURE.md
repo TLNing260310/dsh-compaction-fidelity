@@ -7,11 +7,11 @@ generatedAt: "2026-10-07T02:51:17.495Z"
 
 <architecture_attestation>
 {
-  "revision": 1,
+  "revision": 2,
   "structureHash": "158d2e3dc1aa97627434ab6dc1350d191c4831a8c3e05eee296e5e59e807cd9f",
-  "updateLogHash": "16276bae32d1e13d6940852c7f521147d7dded04345490e16e0ac7bdb6725428",
-  "entryCount": 0,
-  "updatedAt": "2026-10-07T02:51:17.495Z"
+  "updateLogHash": "2358e08ed22eb2fc1fae66dc4df554d85b22758be408cc51480285ff71a5ae07",
+  "entryCount": 1,
+  "updatedAt": "2026-10-07T03:00:50.522Z"
 }
 </architecture_attestation>
 
@@ -326,5 +326,27 @@ generatedAt: "2026-10-07T02:51:17.495Z"
 ## 7. Update Log
 
 <!-- architecture-update-log -->
+
+<architecture_update at="2026-10-07T03:00:50.521Z" scope=".">
+```json
+{
+  "at": "2026-10-07T03:00:50.521Z",
+  "scope": ".",
+  "summary": "S1：架构注入改为有界当前视图，不再取文件头",
+  "changedFiles": [
+    "src/architecture-view.mjs",
+    "src/engine.mjs",
+    "src/summarizer.mjs",
+    "src/architecture-doc.mjs"
+  ],
+  "decisions": [
+    "结构坐标与最新有效更新优先；单条不完整时只给来源指针和 omission"
+  ],
+  "constraints": [
+    "不得注入半截更新块、JSON 或约束；只允许整条或指针"
+  ]
+}
+```
+</architecture_update>
 
 </architecture_retrieval>
