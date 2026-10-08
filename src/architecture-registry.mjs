@@ -223,17 +223,32 @@ export function createGlobalWorkspaceFileFilter(registry) {
  * to the default name. Unregistered scopes keep the previous default-document
  * behavior.
  */
-export function managedDocTarget(registry, scope, fallbackDoc = "ARCHITECTURE.md") {
+export function resolveManagedDocTarget(registry, scope, fallbackDoc = "ARCHITECTURE.md") {
   const normalizedScope = normalizeScope(scope);
-  if (normalizedScope === null) return null;
+  if (normalizedScope === null) return { ok: false, reason: "invalid-scope", scope: null, registered: false };
+  if (registryIsCorrupt(registry)) return { ok: false, reason: "corrupt-registry", scope: normalizedScope, registered: false };
   const entry = registry?.scopes?.[normalizedScope];
-  const docName = typeof entry?.doc === "string" && /^[\w.-]+\.md$/i.test(entry.doc) ? entry.doc : fallbackDoc;
-  const workspacePath = normalizedScope === "." ? docName : `${normalizedScope}/${docName}`;
+  const registered = entry !== undefined && entry !== null;
+  const docName = registered && typeof entry?.doc === "string" && /^[\w.-]+\.md$/i.test(entry.doc) ? entry.doc : fallbackDoc;
+  const workspacePath = normalizedScope === "." ? docName : normalizedScope + "/" + docName;
   // The workspace-wide filter applies every registered scope's rules, so a root
-  // exclude such as "private/**" also constrains a document inside private/.
-  // The scope-local filter returned true for a scope that had no rules of its
-  // own, which let an excluded folder still be read and injected.
-  if (!createGlobalWorkspaceFileFilter(registry)(workspacePath)) return null;  return { scope: normalizedScope, docName, relative: workspacePath };
+  // exclude also constrains a document inside that folder, and a scope that
+  // excludes its own document denies it for every reader.
+  if (!createGlobalWorkspaceFileFilter(registry)(workspacePath)) {
+    // Denial is not absence: the reason is kept so a caller never reports the
+    // document as missing and then offers to create or rescan it.
+    // Keep the reason specific: a rule of this scope is a different finding
+    // from a rule registered above it.
+    const ownRulesDeny = !createWorkspaceFileFilter(registry, normalizedScope)(workspacePath);
+    return { ok: false, reason: ownRulesDeny ? "denied-scope" : "denied-ancestor", scope: normalizedScope, docName, relative: workspacePath, registered };
+  }
+  return { ok: true, reason: null, scope: normalizedScope, docName, relative: workspacePath, registered };
+}
+
+/** The resolved target, or null when the policy refuses the document. */
+export function managedDocTarget(registry, scope, fallbackDoc = "ARCHITECTURE.md") {
+  const resolved = resolveManagedDocTarget(registry, scope, fallbackDoc);
+  return resolved.ok === true ? { scope: resolved.scope, docName: resolved.docName, relative: resolved.relative } : null;
 }
 
 function normalizeEntry(entry) {

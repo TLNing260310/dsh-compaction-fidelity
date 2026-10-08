@@ -298,3 +298,21 @@ test("a root exclude also denies a document inside that folder", () => {
   const open = { scopes: { ".": { include: [], exclude: [] }, private: { include: [], exclude: [] } } };
   assert.equal(managedDocTarget(open, "private").relative, "private/ARCHITECTURE.md", "without the exclude the document is still managed");
 });
+
+test("a refused document keeps a reason, and only an unregistered scope may default", async () => {
+  const { resolveManagedDocTarget } = await import("../src/architecture-registry.mjs");
+  const ancestor = { scopes: { ".": { include: [], exclude: ["private/**"] }, private: { include: [], exclude: [] } } };
+  const deniedAncestor = resolveManagedDocTarget(ancestor, "private");
+  assert.equal(deniedAncestor.ok, false);
+  assert.equal(deniedAncestor.reason, "denied-ancestor");
+  const own = { scopes: { ".": { include: [], exclude: [] }, docs: { include: [], exclude: ["ARCHITECTURE.md"] } } };
+  const deniedScope = resolveManagedDocTarget(own, "docs");
+  assert.equal(deniedScope.reason, "denied-scope");
+  const corrupt = { status: "corrupt", scopes: { private: { include: [], exclude: [] } } };
+  assert.equal(resolveManagedDocTarget(corrupt, "private").reason, "corrupt-registry", "a corrupt registry must not fall back to the default document");
+  const open = { scopes: { ".": { include: [], exclude: [] } } };
+  const allowed = resolveManagedDocTarget(open, "unregistered");
+  assert.equal(allowed.ok, true, "an unregistered scope with no rule against it keeps the default document");
+  assert.equal(allowed.relative, "unregistered/ARCHITECTURE.md");
+  assert.equal(resolveManagedDocTarget(open, "../escape").reason, "invalid-scope");
+});
