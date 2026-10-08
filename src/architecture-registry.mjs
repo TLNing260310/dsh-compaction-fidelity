@@ -320,7 +320,10 @@ export function readArchitectureRegistry(cwd, indexDir = ".dsh/compaction-fideli
     // An unreadable registry is not an absent one; fail closed.
     return { version: REGISTRY_VERSION, status: "corrupt", scopes: {} };
   }
-  if (text.trim().length === 0) return { version: REGISTRY_VERSION, status: "missing", scopes: {} };
+  // A file that exists but holds nothing is not an absent registry: only a
+  // genuinely missing file may fall back to default behavior, so a blank one is
+  // reported as corrupt and must be repaired by hand.
+  if (text.trim().length === 0) return { version: REGISTRY_VERSION, status: "corrupt", scopes: {} };
   const parsed = parseRegistryText(text);
   if (!parsed.ok) return { version: REGISTRY_VERSION, status: "corrupt", scopes: {} };
   return { version: REGISTRY_VERSION, status: "valid", scopes: parsed.scopes };
@@ -339,7 +342,10 @@ export function mutateArchitectureRegistry(cwd, indexDir, mutator) {
   let payload = null;
   const result = mutateArchitectureDocument(file, (text) => {
     let registry;
-    if (text === null || text.trim().length === 0) {
+    if (typeof text === "string" && text.trim().length === 0) {
+      throw new Error("architecture registry is blank and must be repaired before it can be updated: " + file);
+    }
+    if (text === null) {
       registry = { version: REGISTRY_VERSION, status: "missing", scopes: {} };
     } else {
       const parsed = parseRegistryText(text);

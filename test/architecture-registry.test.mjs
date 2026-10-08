@@ -316,3 +316,25 @@ test("a refused document keeps a reason, and only an unregistered scope may defa
   assert.equal(allowed.relative, "unregistered/ARCHITECTURE.md");
   assert.equal(resolveManagedDocTarget(open, "../escape").reason, "invalid-scope");
 });
+
+test("a blank registry file is corrupt, not missing, and is never rebuilt", async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { readArchitectureRegistry, writeArchitectureRegistry, mutateArchitectureRegistry, resolveManagedDocTarget } = await import("../src/architecture-registry.mjs");
+  const cwd = mkdtempSync(join(tmpdir(), "cf-blank-registry-"));
+  try {
+    writeArchitectureRegistry(cwd, ".dsh/compaction-fidelity", { scopes: { ".": { include: [], exclude: [] } } });
+    const indexPath = join(cwd, ".dsh", "compaction-fidelity");
+    const entries = readdirSync(indexPath, { recursive: true }).map((entry) => String(entry));
+    const registryFile = join(indexPath, entries.find((entry) => entry.endsWith(".json")));
+    writeFileSync(registryFile, "   \n", "utf8");
+    assert.equal(readArchitectureRegistry(cwd, ".dsh/compaction-fidelity").status, "corrupt", "a blank file is not an absent registry");
+    const registry = readArchitectureRegistry(cwd, ".dsh/compaction-fidelity");
+    assert.equal(resolveManagedDocTarget(registry, "private").reason, "corrupt-registry");
+    assert.throws(() => mutateArchitectureRegistry(cwd, ".dsh/compaction-fidelity", () => ({ scopes: {} })), /blank and must be repaired/);
+    assert.equal(readFileSync(registryFile, "utf8"), "   \n", "the blank file is left for a human, not rebuilt");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
