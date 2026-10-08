@@ -229,8 +229,11 @@ export function managedDocTarget(registry, scope, fallbackDoc = "ARCHITECTURE.md
   const entry = registry?.scopes?.[normalizedScope];
   const docName = typeof entry?.doc === "string" && /^[\w.-]+\.md$/i.test(entry.doc) ? entry.doc : fallbackDoc;
   const workspacePath = normalizedScope === "." ? docName : `${normalizedScope}/${docName}`;
-  if (!createWorkspaceFileFilter(registry, normalizedScope)(workspacePath)) return null;
-  return { scope: normalizedScope, docName, relative: workspacePath };
+  // The workspace-wide filter applies every registered scope's rules, so a root
+  // exclude such as "private/**" also constrains a document inside private/.
+  // The scope-local filter returned true for a scope that had no rules of its
+  // own, which let an excluded folder still be read and injected.
+  if (!createGlobalWorkspaceFileFilter(registry)(workspacePath)) return null;  return { scope: normalizedScope, docName, relative: workspacePath };
 }
 
 function normalizeEntry(entry) {

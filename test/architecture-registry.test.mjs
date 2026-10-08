@@ -290,3 +290,11 @@ test("managed document targets respect custom names and exclusion rules", () => 
   assert.deepEqual(managedDocTarget(registry, "custom"), { scope: "custom", docName: "DESIGN.md", relative: "custom/DESIGN.md" });
   assert.deepEqual(managedDocTarget(registry, "."), { scope: ".", docName: "ARCHITECTURE.md", relative: "ARCHITECTURE.md" });
 });
+
+
+test("a root exclude also denies a document inside that folder", () => {
+  const registry = { scopes: { ".": { include: [], exclude: ["private/**"] }, private: { include: [], exclude: [] } } };
+  assert.equal(managedDocTarget(registry, "private"), null, "the root exclude must reach the nested document");
+  const open = { scopes: { ".": { include: [], exclude: [] }, private: { include: [], exclude: [] } } };
+  assert.equal(managedDocTarget(open, "private").relative, "private/ARCHITECTURE.md", "without the exclude the document is still managed");
+});
