@@ -198,9 +198,12 @@ function summariseOmitted(omitted) {
 
 /**
  * Assemble a bounded excerpt of one managed document. Structure coordinates are
- * emitted first, then active requirements, then update blocks from newest to
- * oldest. Every emitted unit is whole: an item that does not fit is omitted with
- * a readable pointer rather than cut in half.
+ * emitted first, then the active requirement projection, then history
+ * coordinates. Update bodies are only emitted when the caller explicitly asks
+ * for includeHistory:true, so a retracted instruction cannot re-enter the
+ * default prompt from the log; the full text stays in the file. Every emitted
+ * unit is whole: an item that does not fit is omitted with a readable pointer
+ * rather than cut in half.
  */
 export function buildArchitectureView(text, options = {}) {
   const maxChars = Number.isInteger(options.maxChars) && options.maxChars > 0 ? options.maxChars : DEFAULT_VIEW_CHARS;
@@ -235,6 +238,7 @@ export function buildArchitectureView(text, options = {}) {
       if (!push(line, 'constraint', item.id)) omitted.push({ kind: 'constraint', id: item.id ?? null, reason: 'budget', chars: line.length });
     }
   }
+  const includeHistory = options.includeHistory === true;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     const pointer = relative + ' update#' + entry.index + ' (offset ' + entry.start + ', ' + entry.chars + ' chars)';
@@ -242,8 +246,17 @@ export function buildArchitectureView(text, options = {}) {
       omitted.push({ kind: 'update', id: entry.index, at: entry.at, reason: 'invalid:' + entry.reason, chars: entry.chars, pointer });
       continue;
     }
-    if (!push(entry.raw, 'update', entry.index)) {
-      omitted.push({ kind: 'update', id: entry.index, at: entry.at, reason: 'budget', chars: entry.chars, pointer });
+    if (includeHistory) {
+      if (!push(entry.raw, 'update', entry.index)) {
+        omitted.push({ kind: 'update', id: entry.index, at: entry.at, reason: 'budget', chars: entry.chars, pointer });
+      }
+      continue;
+    }
+    // Default prompt projection: history stays a coordinate, not a body, so a
+    // retracted instruction cannot re-enter the model prompt from the log.
+    const coordinate = '- update#' + entry.index + ' at ' + entry.start + ' (+' + entry.chars + ' chars)' + (entry.at ? ' [' + entry.at + ']' : '');
+    if (!push(coordinate, 'update', entry.index)) {
+      omitted.push({ kind: 'update', id: entry.index, at: entry.at, reason: 'budget', chars: coordinate.length, pointer });
     }
   }
   if (parsed.updateLog.unterminated > 0) omitted.push({ kind: 'update', id: null, reason: 'unterminated', count: parsed.updateLog.unterminated });

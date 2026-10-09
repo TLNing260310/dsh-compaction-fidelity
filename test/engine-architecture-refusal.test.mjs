@@ -96,7 +96,8 @@ test('engine compaction completes when an ancestor scope is denied and skips onl
     ], 'engine-denied-ancestor-session');
     assert.ok(result.summary.some((block) => block.type === 'text' && block.text.includes('engine refusal summary')), 'compaction must still produce a summary');
     assert.ok(!capturedPrompt.includes('DENIED_ANCESTOR_MARKER'), 'a denied ancestor scope must not inject its document');
-    assert.ok(capturedPrompt.includes('ROOT_ALLOWED_MARKER'), 'the allowed root document must still be injected');
+    assert.ok(capturedPrompt.includes('update#1'), 'the allowed root document coordinate must still be injected');
+    assert.equal(capturedPrompt.includes('ROOT_ALLOWED_MARKER'), false, 'update bodies stay out of the default prompt projection');
     assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'architecture-baseline.json')), false, 'refused retrieval must not write a baseline');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -157,4 +158,23 @@ test('a cancellation raised by the official fallback also propagates', skipWitho
 test('the pre-step listener delegates to handlePreStep', skipWithoutPeers, async () => {
   const source = readFileSync(new URL('../src/engine.mjs', import.meta.url), 'utf8');
   assert.ok(source.includes('return engine.handlePreStep(agent, signal, next);'), 'the host listener must delegate to the testable hook body');
+});
+
+
+test('the summary prompt never carries a retracted architecture instruction', skipWithoutPeers, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-engine-retired-'));
+  try {
+    const { renderArchitectureDoc, appendArchitectureUpdate } = await import('../src/architecture-doc.mjs');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'engine-retired-fixture' }), 'utf8');
+    writeFileSync(join(root, 'module.ts'), 'export const value = 1;\n', 'utf8');
+    let doc = renderArchitectureDoc({ scope: '.' });
+    doc = appendArchitectureUpdate(doc, { scope: '.', summary: '必须使用 tabs 缩进' });
+    doc = appendArchitectureUpdate(doc, { scope: '.', summary: '不再需要 tabs 缩进这条，其他保留' });
+    writeFileSync(join(root, 'ARCHITECTURE.md'), doc, 'utf8');
+    const { capturedPrompt } = await runEngineSummary(root, [{ role: 'user', content: [{ type: 'text', text: 'continue the task' }] }], 'engine-retired');
+    assert.equal(capturedPrompt.includes('必须使用 tabs 缩进'), false, 'a retracted instruction must not reach the model prompt');
+    assert.ok(capturedPrompt.includes('ARCHITECTURE.md'), 'the document coordinates must still be present');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

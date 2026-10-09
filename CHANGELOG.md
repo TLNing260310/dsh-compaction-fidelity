@@ -139,6 +139,16 @@ rather than assumed, and are now covered by characterisation tests in
 - Baseline entries are schema-validated (store version, files object, per-file
   hash and size, Git metadata) and a scan that reaches exactly `maxFiles` or
   exhausts any hash/file/byte budget returns `unknown` instead of `aligned`.
+- Refresh now treats the generated sections as an auto region: `constraints`,
+  `decisions`, and `notes` entries that only exist in the old document are kept, an
+  explicitly marked manual region survives verbatim, and a conflicting manual
+  entry refuses the refresh instead of overwriting it.
+- Architecture excerpts default to the active requirement projection plus
+  history coordinates; update bodies (and any retracted instruction) are only
+  emitted when a caller explicitly asks for `includeHistory`.
+- Language, corrections, and user quotes ignore producer-owned (`plugin:*`)
+  messages; path extraction accepts CJK paths and structured tool-call path
+  arguments.
 - Architecture alignment is now tri-state: `aligned` (semantic score below the
   refresh threshold), `stale`, or `unknown` for a missing/corrupt baseline, a
   failed or unavailable Git repository, an incomplete scan, or an exhausted

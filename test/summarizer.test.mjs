@@ -74,3 +74,22 @@ test('reserves compensation tokens from the instruction budget', () => {
   const result = buildSummaryInstructionWithDiagnostics({ language: 'en', ledger, maxTokens: 3000, reserveTokens: 1024 });
   assert.ok(result.diagnostics.estimatedTokens <= 3000 - 1024);
 });
+
+
+test('plugin-produced user messages do not decide the summary language', () => {
+  const human = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Please inspect this repository and report the problems in English with clear evidence.' }] };
+  const injected = { role: 'user', source: { kind: 'plugin:compaction-fidelity' }, content: [{ type: 'text', text: '请确认是否创建架构文档用于记录项目架构和长期压缩工作细节'.repeat(8) }] };
+  assert.equal(extractLedger([human]).language, 'en');
+  assert.equal(extractLedger([human, injected]).language, 'en');
+  assert.equal(extractLedger([human, injected]).userQuotes.some((quote) => quote.includes('请确认')), false, 'plugin messages must not become user quotes');
+});
+
+test('CJK and structured tool-call paths are extracted', () => {
+  const exactPath = 'src/模块/入口.ts';
+  const fromProse = extractLedger([{ role: 'user', content: [{ type: 'text', text: exactPath }] }]);
+  assert.ok(fromProse.paths.includes(exactPath), JSON.stringify(fromProse.paths));
+  const fromTool = extractLedger([{ role: 'assistant', content: [{ type: 'tool-call', toolName: 'read_file', input: { path: exactPath } }] }]);
+  assert.ok(fromTool.paths.includes(exactPath), JSON.stringify(fromTool.paths));
+  const files = extractFilePathsFromMessages([{ role: 'assistant', content: [{ type: 'tool-call', toolName: 'read_file', input: { path: exactPath } }] }], process.cwd());
+  assert.ok(files.includes(exactPath), JSON.stringify(files));
+});

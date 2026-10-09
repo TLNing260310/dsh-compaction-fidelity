@@ -258,3 +258,35 @@ test("readManagedArchitectureDoc refuses a symlinked scope target", (t) => {
     rmSync(sandbox, { recursive: true, force: true });
   }
 });
+
+
+test("refresh preserves manual constraints, decisions, and notes", () => {
+  const original = renderArchitectureDoc({
+    scope: "src/feature",
+    constraints: [{ text: "MANUAL_CONSTRAINT_KEEP" }],
+    decisions: [{ decision: "MANUAL_DECISION_KEEP" }],
+    notes: ["MANUAL_NOTE_KEEP"],
+  });
+  const refreshed = preserveArchitectureUpdateLog(original, renderArchitectureDoc({ scope: "src/feature" }));
+  assert.ok(refreshed.includes("MANUAL_CONSTRAINT_KEEP"));
+  assert.ok(refreshed.includes("MANUAL_DECISION_KEEP"));
+  assert.ok(refreshed.includes("MANUAL_NOTE_KEEP"));
+  assert.equal(verifyArchitectureDoc(refreshed).ok, true, JSON.stringify(verifyArchitectureDoc(refreshed).errors));
+});
+
+test("refresh keeps an explicitly marked manual region", () => {
+  const original = renderArchitectureDoc({ scope: "." });
+  const withManual = original.replace("<!-- architecture-manual:start -->", "<!-- architecture-manual:start -->\nHUMAN_NOTE_KEEP\n");
+  const refreshed = preserveArchitectureUpdateLog(withManual, renderArchitectureDoc({ scope: "." }));
+  assert.ok(refreshed.includes("HUMAN_NOTE_KEEP"));
+  assert.equal(verifyArchitectureDoc(refreshed).ok, true, JSON.stringify(verifyArchitectureDoc(refreshed).errors));
+});
+
+test("a conflicting manual entry refuses the refresh instead of overwriting", () => {
+  const original = renderArchitectureDoc({ scope: ".", constraints: [{ id: "c1", text: "MANUAL_CONSTRAINT_KEEP" }] });
+  assert.throws(
+    () => preserveArchitectureUpdateLog(original, renderArchitectureDoc({ scope: ".", constraints: [{ id: "c1", text: "DIFFERENT" }] })),
+    /conflict/,
+  );
+  assert.ok(original.includes("MANUAL_CONSTRAINT_KEEP"), "the old document is untouched by a refused merge");
+});

@@ -245,6 +245,10 @@ export function renderArchitectureDoc(options = {}) {
     "",
     jsonBlock({ notes, exactValues: options.exactValues ?? [], retrievalAnchors: options.retrievalAnchors ?? [] }),
     "",
+    MANUAL_START,
+    "",
+    MANUAL_END,
+    "",
     "## 7. Update Log",
     "",
     "<!-- architecture-update-log -->",
@@ -282,17 +286,131 @@ function appendArchitectureUpdateRaw(text, update = {}) {
   return text.trimEnd() + "\n\n## Update Log\n\n" + marker + "\n\n" + block;
 }
 
+const FENCE = String.fromCharCode(96, 96, 96);
+
+const MANUAL_START = "<!-- architecture-manual:start -->";
+const MANUAL_END = "<!-- architecture-manual:end -->";
+
+/**
+ * Human-owned list fields inside the generated sections. The renderer may
+ * refresh the structure around them, but an entry that only exists in the old
+ * document is a manual addition and survives; the same key with a different
+ * value is a conflict the refresh refuses instead of overwriting.
+ */
+const MANUAL_LIST_SECTIONS = [
+  {
+    heading: "## 3. Contracts and Constraints",
+    field: "constraints",
+    keyOf: (item) => (typeof item?.id === "string" && item.id.length > 0 ? item.id : null),
+    valueOf: (item) => String(item?.text ?? ""),
+  },
+  {
+    heading: "## 4. Key Decisions",
+    field: "decisions",
+    keyOf: (item) => (typeof item?.id === "string" && item.id.length > 0 ? item.id : null),
+    valueOf: (item) => String(item?.decision ?? ""),
+  },
+  {
+    heading: "## 6. Compression Retrieval Notes",
+    field: "notes",
+    keyOf: (item) => (typeof item === "string" ? item : null),
+    valueOf: (item) => String(item),
+  },
+];
+
+function sectionJsonValue(text, heading) {
+  const headingAt = text.indexOf(heading);
+  if (headingAt < 0) return null;
+  const blockAt = text.indexOf(FENCE + "json", headingAt);
+  if (blockAt < 0) return null;
+  const bodyAt = blockAt + (FENCE + "json").length;
+  if (text[bodyAt] !== "\n") return null;
+  const endAt = text.indexOf("\n" + FENCE, bodyAt + 1);
+  if (endAt < 0) return null;
+  try {
+    const parsed = JSON.parse(text.slice(bodyAt + 1, endAt));
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function replaceSectionJsonValue(text, heading, value) {
+  const headingAt = text.indexOf(heading);
+  if (headingAt < 0) return text;
+  const blockAt = text.indexOf(FENCE + "json", headingAt);
+  if (blockAt < 0) return text;
+  const bodyAt = blockAt + (FENCE + "json").length;
+  const endAt = text.indexOf("\n" + FENCE, bodyAt + 1);
+  if (endAt < 0) return text;
+  return text.slice(0, bodyAt) + "\n" + JSON.stringify(value, null, 2) + text.slice(endAt);
+}
+
+function mergeManualList(oldList, newList, keyOf, valueOf, label) {
+  const result = Array.isArray(newList) ? [...newList] : [];
+  const seen = new Map();
+  for (const item of result) {
+    const key = keyOf(item);
+    if (key !== null) seen.set(key, item);
+  }
+  for (const item of Array.isArray(oldList) ? oldList : []) {
+    const key = keyOf(item);
+    if (key === null) {
+      result.push(item);
+      continue;
+    }
+    if (!seen.has(key)) {
+      seen.set(key, item);
+      result.push(item);
+      continue;
+    }
+    if (valueOf(seen.get(key)) !== valueOf(item)) {
+      throw new Error("architecture document conflict in " + label + ": " + key);
+    }
+  }
+  return result;
+}
+
+function mergeManualSections(oldText, newText) {
+  let merged = newText;
+  for (const section of MANUAL_LIST_SECTIONS) {
+    const oldSection = sectionJsonValue(oldText, section.heading);
+    const newSection = sectionJsonValue(merged, section.heading);
+    if (oldSection === null || newSection === null) continue;
+    const list = mergeManualList(oldSection[section.field], newSection[section.field], section.keyOf, section.valueOf, section.field);
+    merged = replaceSectionJsonValue(merged, section.heading, { ...newSection, [section.field]: list });
+  }
+  return merged;
+}
+
+function copyManualRegion(oldText, newText) {
+  const oldStart = oldText.indexOf(MANUAL_START);
+  if (oldStart < 0) return newText;
+  const oldEnd = oldText.indexOf(MANUAL_END, oldStart + MANUAL_START.length);
+  if (oldEnd < 0) return newText;
+  const content = oldText.slice(oldStart + MANUAL_START.length, oldEnd);
+  if (content.trim().length === 0) return newText;
+  const newStart = newText.indexOf(MANUAL_START);
+  if (newStart < 0) return newText;
+  const newEnd = newText.indexOf(MANUAL_END, newStart + MANUAL_START.length);
+  if (newEnd < 0) return newText;
+  return newText.slice(0, newStart + MANUAL_START.length) + content + newText.slice(newEnd);
+}
+
 function preserveArchitectureUpdateLogRaw(oldText, newText) {
   const marker = "<!-- architecture-update-log -->";
   const closingTag = "</architecture_retrieval>";
+  let merged = newText;
   const oldStart = oldText.indexOf(marker);
-  const newStart = newText.indexOf(marker);
-  if (oldStart < 0 || newStart < 0) return newText;
+  const newStart = merged.indexOf(marker);
   const oldEnd = oldText.lastIndexOf(closingTag);
-  const newEnd = newText.lastIndexOf(closingTag);
-  if (oldEnd < 0 || newEnd < 0) return newText;
-  const oldLog = oldText.slice(oldStart, oldEnd);
-  return newText.slice(0, newStart) + oldLog + newText.slice(newEnd);
+  const newEnd = merged.lastIndexOf(closingTag);
+  if (oldStart >= 0 && newStart >= 0 && oldEnd >= 0 && newEnd >= 0) {
+    const oldLog = oldText.slice(oldStart, oldEnd);
+    merged = merged.slice(0, newStart) + oldLog + merged.slice(newEnd);
+  }
+  merged = mergeManualSections(oldText, merged);
+  return copyManualRegion(oldText, merged);
 }
 
 export function appendArchitectureUpdate(text, update = {}) {
@@ -324,10 +442,19 @@ function normalizeHashSection(text) {
 
 function structureSection(text) {
   const value = String(text ?? "");
-  const markerIndex = value.indexOf("<!-- architecture-update-log -->");
-  const closingIndex = value.indexOf("</architecture_retrieval>");
-  const end = markerIndex >= 0 ? markerIndex : closingIndex >= 0 ? closingIndex : value.length;
-  return normalizeHashSection(stripAttestation(value.slice(0, end)));
+  // The manual region is human-owned: editing it must not look like tampering
+  // with the generated structure, so it is excluded from the structure hash
+  // while every generated section stays covered.
+  let auto = value;
+  const manualStart = value.indexOf(MANUAL_START);
+  if (manualStart >= 0) {
+    const manualEnd = value.indexOf(MANUAL_END, manualStart + MANUAL_START.length);
+    if (manualEnd >= 0) auto = value.slice(0, manualStart) + value.slice(manualEnd + MANUAL_END.length);
+  }
+  const markerIndex = auto.indexOf("<!-- architecture-update-log -->");
+  const closingIndex = auto.indexOf("</architecture_retrieval>");
+  const end = markerIndex >= 0 ? markerIndex : closingIndex >= 0 ? closingIndex : auto.length;
+  return normalizeHashSection(stripAttestation(auto.slice(0, end)));
 }
 
 function updateLogSection(text) {

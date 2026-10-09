@@ -1,11 +1,13 @@
 import { clampText, estimateTextTokens, uniqueBy } from './util.mjs';
+import { isProducerOwnedSource } from './message-source.mjs';
 import { ARCHITECTURE_VIEW_TOTAL_CHARS, clampArchitectureViewText } from './architecture-view.mjs';
 
 
 
 const CJK_RE = /[\u3400-\u9fff\uf900-\ufaff]/g;
 
-const PATH_RE = /(?:[A-Za-z]:[\\/])?(?:[\w.@()-]+[\\/])*[\w.@()-]+\.(?:ts|tsx|js|jsx|mjs|cjs|go|py|rs|java|kt|kts|cs|rb|php|swift|c|h|cc|cpp|hpp|json|jsonc|ya?ml|toml|ini|md|mdx|sql|graphql|prisma|xml|gradle|properties|sh|ps1|bat|cmd|env)\b/g;
+const PATH_SEGMENT = "A-Za-z0-9_\\-.@()\\u3400-\\u9fff\\uf900-\\ufaff";
+const PATH_RE = new RegExp("(?:[A-Za-z]:[\\\\/])?(?:[" + PATH_SEGMENT + "]+[\\\\/])*[" + PATH_SEGMENT + "]+\\.(?:ts|tsx|js|jsx|mjs|cjs|go|py|rs|java|kt|kts|cs|rb|php|swift|c|h|cc|cpp|hpp|json|jsonc|ya?ml|toml|ini|md|mdx|sql|graphql|prisma|xml|gradle|properties|sh|ps1|bat|cmd|env)\\b", "g");
 
 const COMMAND_RE = /(?:^|[\s。；;，,、])((?:[$>]\s*)?(?:npm|pnpm|yarn|npx|bun|node|deno|go|cargo|rustc|python|python3|pip|pip3|pytest|uv|poetry|dotnet|mvn|gradle|make|cmake|git|docker|docker-compose|kubectl|helm|terraform|pwsh|powershell|bash|sh|zsh|cmd|dsh)\b[^\n]*)/gim;
 
@@ -43,17 +45,57 @@ export function messageText(message) {
 
 
 
+const TOOL_BLOCK_TYPES = new Set(['tool-call', 'tool_use', 'function_call', 'function-call']);
+
+/** Producer attribution: a plugin message must not be counted as human input. */
+export function isPluginProducedSource(source) {
+  if (source === null || source === undefined) return false;
+  if (typeof source === 'string') return source === 'plugin' || source.startsWith('plugin:');
+  if (typeof source !== 'object') return false;
+  if (source.kind === 'plugin') return true;
+  return isProducerOwnedSource(source);
+}
+
+/** Structured path arguments carried by tool-call blocks, not by prose text. */
+function messageToolText(message) {
+  const content = Array.isArray(message?.content) ? message.content : [];
+  const parts = [];
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue;
+    if (!TOOL_BLOCK_TYPES.has(block.type)) continue;
+    const input = block.input ?? block.args ?? block.arguments ?? block.parameters;
+    if (typeof input === 'string') {
+      if (input.trim().length > 0) parts.push(input);
+      continue;
+    }
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) continue;
+    for (const [key, value] of Object.entries(input)) {
+      if (typeof value !== 'string' || value.trim().length === 0) continue;
+      if (!/(path|file|dir|cwd|target)/i.test(key)) continue;
+      parts.push(value);
+    }
+  }
+  return parts.join('\n');
+}
+
+function messageSearchText(message) {
+  const text = messageText(message);
+  const tool = messageToolText(message);
+  if (tool.length === 0) return text;
+  return text.length === 0 ? tool : text + '\n' + tool;
+}
+
 export function describeMessages(messages) {
 
   const described = [];
 
   for (const message of messages ?? []) {
 
-    const text = messageText(message);
+    const text = messageSearchText(message);
 
     if (text.length === 0) continue;
 
-    described.push({ role: message?.role ?? 'unknown', text, message });
+    described.push({ role: message?.role ?? 'unknown', text, source: message?.source ?? null, message });
 
   }
 
@@ -146,7 +188,10 @@ export function classifyUserLanguage(profile) {
 export function resolveUserLanguage(described, options = {}) {
   const window = Number.isInteger(options.window) && options.window > 0 ? options.window : LANGUAGE_WINDOW;
   const entries = Array.isArray(described) ? described : [];
-  const users = entries.filter((entry) => entry?.role === 'user' && String(entry.text ?? '').trim().length > 0);
+  // Plugin-injected user messages are not human input: they must not decide the
+  // narrative language (or the conversation fallback) on their own.
+  const humanEntries = entries.filter((entry) => !isPluginProducedSource(entry?.source));
+  const users = humanEntries.filter((entry) => entry?.role === 'user' && String(entry.text ?? '').trim().length > 0);
   const attempt = (list, basis) => {
     const profile = languageProfile(list.map((entry) => entry.text));
     const language = classifyUserLanguage(profile);
@@ -154,7 +199,7 @@ export function resolveUserLanguage(described, options = {}) {
   };
   return attempt(users.slice(-window), 'recent-user')
     ?? attempt(users, 'all-user')
-    ?? attempt(entries, 'conversation-fallback')
+    ?? attempt(humanEntries, 'conversation-fallback')
     ?? { language: 'en', basis: 'empty', profile: { cjk: 0, latinProse: 0, latinIdentifiers: 0 }, sampled: 0 };
 }
 
@@ -170,7 +215,7 @@ export function extractLedger(messages, options = {}) {
 
   const described = describeMessages(messages);
 
-  const userMessages = described.filter((entry) => entry.role === 'user');
+  const userMessages = described.filter((entry) => entry.role === 'user' && !isPluginProducedSource(entry.source));
 
   const languageDecision = resolveUserLanguage(described);
 
@@ -210,7 +255,7 @@ export function extractLedger(messages, options = {}) {
 
 export function extractFilePathsFromMessages(messages, root = process.cwd()) {
 
-  const text = (messages ?? []).map(messageText).join('\n');
+  const text = (messages ?? []).map(messageSearchText).join('\n');
 
   const matches = text.match(PATH_RE) ?? [];
 

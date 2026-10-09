@@ -249,9 +249,10 @@ test('engine applies managed exclusions, runtime anchors, and the full pinned bu
     assert.ok(capturedPrompt.includes('compaction_fidelity_project_brief'));
     assert.ok(!capturedPrompt.includes('EXCLUDED_ARCHITECTURE_MARKER'));
     // An appended update log used to be unreachable: the file head was injected,
-    // so every later update fell outside the excerpt. The newest update must now
-    // reach the prompt, and the section coordinates must survive with it.
-    assert.ok(capturedPrompt.includes('NEWEST_ARCHITECTURE_UPDATE_MARKER'), 'the newest architecture update must be injected');
+    // so every later update fell outside the excerpt. The newest update
+    // coordinate must now reach the prompt while its body stays in the file.
+    assert.ok(capturedPrompt.includes('update#5'), 'the newest architecture update coordinate must be injected');
+    assert.equal(capturedPrompt.includes('NEWEST_ARCHITECTURE_UPDATE_MARKER'), false, 'update bodies must not be injected by default');
     assert.ok(capturedPrompt.includes('7. Update Log'), 'architecture section coordinates must survive the excerpt');
     assert.ok(result.summary.some((block) => block.type === 'text' && block.text.startsWith('<pinned_constraints>')));
 

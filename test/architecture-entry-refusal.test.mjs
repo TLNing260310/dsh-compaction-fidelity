@@ -253,3 +253,25 @@ test('a root baseline update does not register a child-scope excluded file', ski
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('refresh preserves a manually marked region and the update history', skipWithoutPeers, async () => {
+  const { root, command, agent } = await setupEntryTest();
+  try {
+    fixtureWorkspace(root);
+    const created = await command.handler({ rawInput: 'architecture create .', agent });
+    assert.equal(created.kind, 'success');
+    const docPath = join(root, 'ARCHITECTURE.md');
+    const marked = readFileSync(docPath, 'utf8').replace('<!-- architecture-manual:start -->', '<!-- architecture-manual:start -->\nHUMAN_MANUAL_KEEP\n');
+    writeFileSync(docPath, marked, 'utf8');
+    const updated = await command.handler({ rawInput: 'architecture update . keep history', agent });
+    assert.equal(updated.kind, 'success');
+    const refreshed = await command.handler({ rawInput: 'architecture refresh .', agent });
+    assert.equal(refreshed.kind, 'success');
+    const content = readFileSync(docPath, 'utf8');
+    assert.ok(content.includes('HUMAN_MANUAL_KEEP'), 'the manual region must survive refresh');
+    assert.ok(content.includes('keep history'), 'the update history must survive refresh');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
