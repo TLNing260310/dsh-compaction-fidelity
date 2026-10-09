@@ -131,6 +131,14 @@ rather than assumed, and are now covered by characterisation tests in
   pre-step hook schedules the background index only after the host allows the
   step to continue, so a slow rejection, throw, or cancellation cannot read or
   write behind a refused step.
+- Git-backed alignment treats the baseline snapshot as the source of truth:
+  untracked files are enumerated individually (`--untracked-files=all`), rename
+  pairs are followed, and the recorded file set is re-checked so a
+  dirty-at-refresh file restored to `HEAD` is still reported while a file whose
+  content still matches the baseline stays at score 0.
+- Baseline entries are schema-validated (store version, files object, per-file
+  hash and size, Git metadata) and a scan that reaches exactly `maxFiles` or
+  exhausts any hash/file/byte budget returns `unknown` instead of `aligned`.
 - Architecture alignment is now tri-state: `aligned` (semantic score below the
   refresh threshold), `stale`, or `unknown` for a missing/corrupt baseline, a
   failed or unavailable Git repository, an incomplete scan, or an exhausted

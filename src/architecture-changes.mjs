@@ -96,7 +96,7 @@ function gitContext(cwd, scope) {
   return head === null ? null : { root, head };
 }
 function gitStatusPaths(root, scope) {
-  const output = gitOutput(root, ["status", "--porcelain=v1", "-z"]);
+  const output = gitOutput(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (output === null) return [];
   const parts = output.split("\0");
   const files = [];
@@ -106,7 +106,11 @@ function gitStatusPaths(root, scope) {
     const code = entry.slice(0, 2);
     const file = normalizeRel(entry.slice(3));
     if (inScope(file, scope) && isSemanticFile(file)) files.push(file);
-    if (code.startsWith("R") || code.startsWith("C")) index += 1;
+    if (code.startsWith("R") || code.startsWith("C")) {
+      const original = parts[index + 1] ? normalizeRel(parts[index + 1]) : "";
+      index += 1;
+      if (original.length > 0 && inScope(original, scope) && isSemanticFile(original)) files.push(original);
+    }
   }
   return files;
 }
@@ -151,7 +155,11 @@ function parseBaselineStore(text) {
   if (text === null || text.trim().length === 0) return { version: 1, scopes: {} };
   try {
     const parsed = JSON.parse(text);
-    if (parsed !== null && typeof parsed === "object" && parsed.scopes !== null && typeof parsed.scopes === "object" && !Array.isArray(parsed.scopes)) return parsed;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.scopes !== null && typeof parsed.scopes === "object" && !Array.isArray(parsed.scopes)) {
+      const version = parsed.version ?? 1;
+      if (version !== 1 && version !== 2) return null;
+      return parsed;
+    }
   } catch {
     // reported as unreadable below
   }
@@ -187,6 +195,25 @@ export function readArchitectureBaseline(cwd, scope, indexDir = ".dsh/compaction
   return entry !== null && typeof entry === "object" ? entry : null;
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Describe the first schema violation of a baseline entry, or null when valid. */
+function baselineEntryIssue(entry) {
+  if (!isPlainObject(entry)) return "entry";
+  if (entry.at !== undefined && !Number.isFinite(entry.at)) return "at";
+  if (entry.gitRoot !== undefined && entry.gitRoot !== null && typeof entry.gitRoot !== "string") return "gitRoot";
+  if (entry.head !== undefined && entry.head !== null && typeof entry.head !== "string") return "head";
+  if (!isPlainObject(entry.files)) return "files";
+  for (const meta of Object.values(entry.files)) {
+    if (!isPlainObject(meta)) return "file-meta";
+    if (typeof meta.hash !== "string") return "file-hash";
+    if (!Number.isFinite(meta.size) || meta.size < 0) return "file-size";
+  }
+  return null;
+}
+
 /** Baseline verdict for one scope: ok | missing | corrupt, with the entry. */
 function readBaselineEntry(cwd, scope, indexDir) {
   const file = baselinePath(cwd, indexDir);
@@ -205,37 +232,49 @@ function readBaselineEntry(cwd, scope, indexDir) {
   const store = parseBaselineStore(text);
   if (store === null) return { status: "corrupt", baseline: null };
   const entry = store.scopes[normalizeRel(scope)] ?? store.scopes[scope];
-  if (entry === null || entry === undefined || typeof entry !== "object") return { status: "missing", baseline: null };
+  if (entry === undefined || entry === null) return { status: "missing", baseline: null };
+  if (baselineEntryIssue(entry) !== null) return { status: "corrupt", baseline: null };
   return { status: "ok", baseline: entry };
 }
 
 /**
- * True when a file git reports as dirty is byte-identical to the snapshot the
- * baseline recorded at refresh time. Such a file was already dirty then, so it
- * must not keep reporting as a fresh change.
+ * Compare one file's current content against the baseline snapshot. The
+ * baseline is the source of truth, so a file is only "unchanged" when its
+ * content hash matches; callers pass a shared budget state so an over-budget or
+ * unreadable comparison becomes "unknown" instead of a silent no-change.
  */
-function unchangedSinceBaseline(cwd, baseline, file, options) {
+function baselineContentState(cwd, baseline, file, options, state) {
   const previous = baseline?.files?.[file];
-  if (previous === null || previous === undefined) return false;
   const absolute = join(cwd, file);
-  if (!existsSync(absolute)) return false;
   let stat;
   try {
     stat = statSync(absolute);
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.code === "ENOENT") return "changed";
+    state.scanError = true;
+    return "unknown";
   }
+  if (previous === null || previous === undefined) return "changed";
   const maxBytes = Number.isFinite(options.maxFileBytes) && options.maxFileBytes > 0 ? options.maxFileBytes : 1024 * 1024;
-  if (stat.size > maxBytes) return false;
-  if (typeof previous.size === "number" && previous.size !== stat.size) return false;
-  if (typeof previous.hash === "string" && previous.hash.length > 0) {
-    try {
-      return architectureHash(readFileSync(absolute, "utf8")) === previous.hash;
-    } catch {
-      return false;
-    }
+  if (stat.size > maxBytes) {
+    state.limitHit = true;
+    return "unknown";
   }
-  return true;
+  if (typeof previous.hash !== "string" || previous.hash.length === 0) return "changed";
+  if (state.reads >= state.maxHashFiles || state.bytes + stat.size > state.maxHashBytes) {
+    state.limitHit = true;
+    return "unknown";
+  }
+  let content;
+  try {
+    content = state.readFile(absolute, "utf8");
+  } catch {
+    state.scanError = true;
+    return "unknown";
+  }
+  state.reads += 1;
+  state.bytes += stat.size;
+  return architectureHash(content) === previous.hash ? "unchanged" : "changed";
 }
 
 function unknownChange(reason, method, extra = {}) {
@@ -361,6 +400,12 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
       }
     }
   }
+  // Reaching maxFiles exactly can end the while loop with directories still
+  // waiting on the stack; that is exactly as incomplete as an inner break.
+  if (out.length >= maxFiles && stack.length > 0) {
+    truncated = true;
+    limitHit = true;
+  }
   return { files: out, truncated, limitHit };
 }
 
@@ -430,27 +475,64 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
   if (baseline.gitRoot && baseline.head) {
     if (!isGitRepository(baseline.gitRoot)) return unknownChange("git-unavailable", "git", { baselineFound: true });
     const failuresBefore = gitFailureCount;
+    const state = {
+      readFile: typeof options.readFile === "function" ? options.readFile : readFileSync,
+      maxHashFiles: Number.isInteger(options.maxHashFiles) && options.maxHashFiles > 0 ? options.maxHashFiles : 3000,
+      maxHashBytes: Number.isInteger(options.maxHashBytes) && options.maxHashBytes > 0 ? options.maxHashBytes : 32 * 1024 * 1024,
+      reads: 0,
+      bytes: 0,
+      limitHit: false,
+      scanError: false,
+    };
     const lineMap = new Map();
     const toWorkspace = (file) => {
       const workspaceFile = normalizeRel(relative(cwd, join(baseline.gitRoot, normalizeRel(file))));
       return workspaceFile.startsWith("../") ? null : workspaceFile;
     };
-    const addRepoPath = (file, lines) => {
+    // Mirror the scanner's own exclusions: dot paths, ignored build
+    // directories, and sensitive files never become candidates, and a
+    // policy-excluded path must not be read for comparison either.
+    const allowed = (workspaceFile) => {
+      if (workspaceFile === null || workspaceFile.length === 0) return false;
+      if (!inScope(workspaceFile, scope) || !isSemanticFile(workspaceFile)) return false;
+      if (basename(workspaceFile) === docName) return false;
+      const segments = workspaceFile.split("/");
+      if (segments.some((segment) => segment.startsWith(".") || IGNORE_DIRS.has(segment))) return false;
+      if (isSensitiveIndexPath(workspaceFile)) return false;
+      if (filter !== null && !filter(workspaceFile)) return false;
+      return true;
+    };
+    const addCandidate = (file, lines) => {
       const workspaceFile = toWorkspace(file);
-      if (workspaceFile === null || !inScope(workspaceFile, scope) || !isSemanticFile(workspaceFile)) return;
-      if (filter !== null && !filter(workspaceFile)) return;
+      if (!allowed(workspaceFile)) return;
       lineMap.set(workspaceFile, Math.max(lineMap.get(workspaceFile) ?? 0, lines));
     };
     throwIfAborted(signal);
-    for (const file of gitStatusPaths(baseline.gitRoot, ".")) addRepoPath(file, 0);
-    for (const file of gitDiffPaths(baseline.gitRoot, baseline.head, ".")) addRepoPath(file, 0);
-    for (const [file, lines] of gitNumstat(baseline.gitRoot, baseline.head, ".")) addRepoPath(file, lines);
-    for (const [file, lines] of gitNumstat(baseline.gitRoot, null, ".")) addRepoPath(file, lines);
+    for (const file of gitStatusPaths(baseline.gitRoot, ".")) addCandidate(file, 0);
+    for (const file of gitDiffPaths(baseline.gitRoot, baseline.head, ".")) addCandidate(file, 0);
+    for (const [file, lines] of gitNumstat(baseline.gitRoot, baseline.head, ".")) addCandidate(file, lines);
+    for (const [file, lines] of gitNumstat(baseline.gitRoot, null, ".")) addCandidate(file, lines);
     if (gitFailureCount > failuresBefore) return unknownChange("git-failed", "git", { baselineFound: true });
-    // Worktree changes that were already present at refresh time are part of the
-    // snapshot, not fresh changes; only files whose content moved beyond the
-    // baseline count as stale.
-    const changedFiles = [...lineMap.keys()].filter((file) => basename(file) !== docName && !unchangedSinceBaseline(cwd, baseline, file, options));
+    const changedFiles = [];
+    const checked = new Set();
+    const consider = (workspaceFile, lines) => {
+      if (!allowed(workspaceFile) || checked.has(workspaceFile)) return;
+      checked.add(workspaceFile);
+      const verdict = baselineContentState(cwd, baseline, workspaceFile, options, state);
+      if (verdict === "changed") {
+        changedFiles.push(workspaceFile);
+        lineMap.set(workspaceFile, Math.max(lineMap.get(workspaceFile) ?? 0, lines));
+      }
+    };
+    // Git is the candidate accelerator and line-count source; the recorded
+    // baseline remains the source of truth, so a candidate only counts when its
+    // content really moved away from the snapshot.
+    for (const [file, lines] of lineMap) consider(file, lines);
+    // Files git no longer reports (restored to HEAD, deleted, renamed away)
+    // still count when their content left the recorded snapshot.
+    for (const file of Object.keys(baseline.files ?? {})) consider(file, 0);
+    if (state.limitHit) return unknownChange("budget-exhausted", "git", { baselineFound: true, incomplete: true });
+    if (state.scanError) return unknownChange("scan-incomplete", "git", { baselineFound: true, incomplete: true });
     const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
     return { method: "git", ok: true, unknownReason: null, score: scored.score, changedFiles, forced: scored.forced, baselineFound: true, incomplete: false };
   }
