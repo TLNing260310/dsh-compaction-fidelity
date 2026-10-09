@@ -32,7 +32,7 @@ import { PLUGIN_NAME, PRODUCER_SOURCE } from './message-source.mjs';
 import { appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readManagedArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, verifyArchitectureDoc } from './architecture-doc.mjs';
 
 import { mutateArchitectureDocument } from './architecture-io.mjs';
-import { architectureBaselineFromIndex, computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
+import { architectureBaselineFromIndex, classifyAlignment, computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
 import { classifyRegistryWriteError, createGlobalWorkspaceFileFilter, createWorkspaceFileFilter, isValidScopePattern, managedDocOutcomeFor, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
@@ -621,8 +621,8 @@ export function apply(ctx, config = {}) {
           const stat = statSync(doc.target.absolute);
           const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
           const verification = verifyArchitectureDoc(doc.doc.text);
-          const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-          return { text: "exists: " + doc.target.relative + "; aligned=" + aligned + "; score=" + change.score + "; method=" + change.method + "; attestation=" + (verification.attestation === null ? "missing" : verification.attestation.revision) + "; consistent=" + verification.ok };
+          const alignment = classifyAlignment(change, cfg.architectureRefreshThreshold);
+          return { text: "exists: " + doc.target.relative + "; alignment=" + alignment.status + (alignment.reason === null ? "" : " (" + alignment.reason + ")") + "; score=" + change.score + "; method=" + change.method + "; attestation=" + (verification.attestation === null ? "missing" : verification.attestation.revision) + "; consistent=" + verification.ok };
         }
         if (action === "read") {
           const doc = readManagedDoc(cwd, scope);
@@ -646,8 +646,8 @@ export function apply(ctx, config = {}) {
           const stat = statSync(doc.target.absolute);
           const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
           const docVerification = verifyArchitectureDoc(doc.doc.text);
-          const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-          return { text: "status: " + (aligned ? "aligned" : "stale") + "; score=" + change.score + "; method=" + change.method + "; forced=" + change.forced + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() + "; attestation=" + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + "; consistent=" + docVerification.ok + "; entries=" + docVerification.entryCount };
+          const alignment = classifyAlignment(change, cfg.architectureRefreshThreshold);
+          return { text: "status: " + alignment.status + (alignment.reason === null ? "" : " (reason=" + alignment.reason + ")") + "; score=" + change.score + "; method=" + change.method + "; forced=" + change.forced + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() + "; attestation=" + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + "; consistent=" + docVerification.ok + "; entries=" + docVerification.entryCount };
         }
         if (action === "verify") {
           const doc = readManagedDoc(cwd, scope);
@@ -848,8 +848,8 @@ export function apply(ctx, config = {}) {
               const stat = statSync(doc.target.absolute);
               const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
               const verification = verifyArchitectureDoc(doc.doc.text);
-              const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-              return { kind: 'success', text: '已存在：' + doc.target.relative + '；对齐=' + (aligned ? 'aligned' : 'stale') + '；变化分=' + change.score + '；检测=' + change.method + '；attestation=' + (verification.attestation === null ? 'missing' : verification.attestation.revision) + '；consistent=' + verification.ok };
+              const alignment = classifyAlignment(change, cfg.architectureRefreshThreshold);
+              return { kind: 'success', text: '已存在：' + doc.target.relative + '；对齐=' + alignment.status + (alignment.reason === null ? '' : '（原因：' + alignment.reason + '）') + '；变化分=' + change.score + '；检测=' + change.method + '；attestation=' + (verification.attestation === null ? 'missing' : verification.attestation.revision) + '；consistent=' + verification.ok };
             }
             if (action === 'read') {
               const doc = readManagedDoc(cwd, scope);
@@ -867,8 +867,8 @@ export function apply(ctx, config = {}) {
               const stat = statSync(doc.target.absolute);
               const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
               const docVerification = verifyArchitectureDoc(doc.doc.text);
-              const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-              return { kind: 'success', text: '对齐状态：' + (aligned ? "aligned" : "stale") + '；变化分=' + change.score + '；检测=' + change.method + '；强制=' + change.forced + '；阈值=' + cfg.architectureRefreshThreshold + '；更新时间=' + new Date(stat.mtimeMs).toISOString() + '；路径=' + doc.target.relative + '；attestation=' + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + '；consistent=' + docVerification.ok + '；entries=' + docVerification.entryCount };
+              const alignment = classifyAlignment(change, cfg.architectureRefreshThreshold);
+              return { kind: 'success', text: '对齐状态：' + alignment.status + (alignment.reason === null ? '' : '（原因：' + alignment.reason + '）') + '；变化分=' + change.score + '；检测=' + change.method + '；强制=' + change.forced + '；阈值=' + cfg.architectureRefreshThreshold + '；更新时间=' + new Date(stat.mtimeMs).toISOString() + '；路径=' + doc.target.relative + '；attestation=' + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + '；consistent=' + docVerification.ok + '；entries=' + docVerification.entryCount };
             }
             if (action === 'verify') {
               const doc = readManagedDoc(cwd, scope);
@@ -1125,7 +1125,8 @@ export function apply(ctx, config = {}) {
                   continue;
                 }
                 const change = cachedArchitectureChange(askedCwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
-                if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
+                const alignment = classifyAlignment(change, cfg.architectureRefreshThreshold);
+                if (alignment.status !== "stale") continue;
                 const now = Date.now();
                 const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);
                 let reminder = null;

@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { architectureHash, assertWorkspaceContained, mutateArchitectureDocument } from "./architecture-io.mjs";
-import { countChangedFilesSince } from "./architecture-doc.mjs";
 import { throwIfAborted } from "./util.mjs";
 import { buildIndex, isSensitiveIndexPath } from "./project-index.mjs";
 
@@ -17,6 +16,7 @@ const IGNORE_DIRS = new Set(["node_modules", ".git", ".dsh", "dist", "build", "t
 const gitRepoCache = new Map();
 const BASELINE_FILE = "architecture-baseline.json";
 const MAX_GIT_REPO_CACHE = 128;
+let gitFailureCount = 0;
 
 function normalizeRel(value) {
   return String(value ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
@@ -55,6 +55,7 @@ function gitOutput(root, args, timeoutMs = 5000) {
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch {
+    gitFailureCount += 1;
     return null;
   }
 }
@@ -186,6 +187,61 @@ export function readArchitectureBaseline(cwd, scope, indexDir = ".dsh/compaction
   return entry !== null && typeof entry === "object" ? entry : null;
 }
 
+/** Baseline verdict for one scope: ok | missing | corrupt, with the entry. */
+function readBaselineEntry(cwd, scope, indexDir) {
+  const file = baselinePath(cwd, indexDir);
+  try {
+    assertWorkspaceContained(cwd, file);
+  } catch {
+    return { status: "corrupt", baseline: null };
+  }
+  if (!existsSync(file)) return { status: "missing", baseline: null };
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return { status: "corrupt", baseline: null };
+  }
+  const store = parseBaselineStore(text);
+  if (store === null) return { status: "corrupt", baseline: null };
+  const entry = store.scopes[normalizeRel(scope)] ?? store.scopes[scope];
+  if (entry === null || entry === undefined || typeof entry !== "object") return { status: "missing", baseline: null };
+  return { status: "ok", baseline: entry };
+}
+
+/**
+ * True when a file git reports as dirty is byte-identical to the snapshot the
+ * baseline recorded at refresh time. Such a file was already dirty then, so it
+ * must not keep reporting as a fresh change.
+ */
+function unchangedSinceBaseline(cwd, baseline, file, options) {
+  const previous = baseline?.files?.[file];
+  if (previous === null || previous === undefined) return false;
+  const absolute = join(cwd, file);
+  if (!existsSync(absolute)) return false;
+  let stat;
+  try {
+    stat = statSync(absolute);
+  } catch {
+    return false;
+  }
+  const maxBytes = Number.isFinite(options.maxFileBytes) && options.maxFileBytes > 0 ? options.maxFileBytes : 1024 * 1024;
+  if (stat.size > maxBytes) return false;
+  if (typeof previous.size === "number" && previous.size !== stat.size) return false;
+  if (typeof previous.hash === "string" && previous.hash.length > 0) {
+    try {
+      return architectureHash(readFileSync(absolute, "utf8")) === previous.hash;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function unknownChange(reason, method, extra = {}) {
+  return { method, ok: false, unknownReason: reason, score: 0, changedFiles: [], forced: false, incomplete: false, baselineFound: true, ...extra };
+}
+
 /**
  * Write one scope's baseline entry. The store is guarded by the same
  * containment check and lock/CAS helper as every other architecture artifact,
@@ -261,6 +317,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
   const maxFileBytes = Number.isFinite(options.maxFileBytes) && options.maxFileBytes > 0 ? options.maxFileBytes : 1024 * 1024;
   const signal = options.signal;
   let truncated = false;
+  let limitHit = false;
   const base = scope === "." ? root : join(root, scope);
   const stack = [base];
   while (stack.length > 0 && out.length < maxFiles) {
@@ -277,6 +334,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
       throwIfAborted(signal);
       if (out.length >= maxFiles) {
         truncated = true;
+        limitHit = true;
         break;
       }
       if (entry.name.startsWith(".")) continue;
@@ -294,6 +352,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
         const stat = statSync(join(dir, entry.name));
         if (stat.size > maxFileBytes) {
           truncated = true;
+          limitHit = true;
           continue;
         }
         out.push({ file: relativeFile, size: stat.size, mtimeMs: stat.mtimeMs, absolute: join(dir, entry.name) });
@@ -302,7 +361,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
       }
     }
   }
-  return { files: out, truncated };
+  return { files: out, truncated, limitHit };
 }
 
 function computeCurrentHashes(cwd, scope, baseline, options) {
@@ -322,14 +381,17 @@ function computeCurrentHashes(cwd, scope, baseline, options) {
   const current = new Map();
   let hashedBytes = 0;
   let truncated = walk.truncated;
+  let limitHit = walk.limitHit === true;
   for (const entry of ordered) {
     throwIfAborted(signal);
     if (current.size >= maxHashFiles || hashedBytes >= maxHashBytes) {
       truncated = true;
+      limitHit = true;
       break;
     }
     if (hashedBytes + entry.size > maxHashBytes) {
       truncated = true;
+      limitHit = true;
       continue;
     }
     try {
@@ -339,7 +401,7 @@ function computeCurrentHashes(cwd, scope, baseline, options) {
       truncated = true;
     }
   }
-  return { current, truncated };
+  return { current, truncated, reason: limitHit ? "budget-exhausted" : truncated ? "scan-incomplete" : null };
 }
 
 function scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold) {
@@ -358,70 +420,90 @@ export function detectSemanticChanges(cwd, scope, options = {}) {
   const indexDir = options.indexDir ?? ".dsh/compaction-fidelity";
   const docName = options.docName ?? "ARCHITECTURE.md";
   const singleFileChangeThreshold = options.singleFileChangeThreshold ?? 300;
-  const baseline = readArchitectureBaseline(cwd, scope, indexDir);
+  const signal = options.signal;
+  throwIfAborted(signal);
+  const baselineRead = readBaselineEntry(cwd, scope, indexDir);
+  if (baselineRead.status === "corrupt") return unknownChange("corrupt-baseline", "hash", { baselineFound: true });
+  if (baselineRead.status === "missing") return unknownChange("missing-baseline", "none", { baselineFound: false });
+  const baseline = baselineRead.baseline;
   const filter = typeof options.filterFile === "function" ? options.filterFile : null;
-  if (baseline !== null) {
-    if (baseline.gitRoot && baseline.head && isGitRepository(baseline.gitRoot)) {
-      const lineMap = new Map();
-      const toWorkspace = (file) => {
-        const workspaceFile = normalizeRel(relative(cwd, join(baseline.gitRoot, normalizeRel(file))));
-        return workspaceFile.startsWith("../") ? null : workspaceFile;
-      };
-      const addRepoPath = (file, lines) => {
-        const workspaceFile = toWorkspace(file);
-        if (workspaceFile === null || !inScope(workspaceFile, scope) || !isSemanticFile(workspaceFile)) return;
-        if (filter !== null && !filter(workspaceFile)) return;
-        lineMap.set(workspaceFile, Math.max(lineMap.get(workspaceFile) ?? 0, lines));
-      };
-      for (const file of gitStatusPaths(baseline.gitRoot, ".")) addRepoPath(file, 0);
-      for (const file of gitDiffPaths(baseline.gitRoot, baseline.head, ".")) addRepoPath(file, 0);
-      for (const [file, lines] of gitNumstat(baseline.gitRoot, baseline.head, ".")) addRepoPath(file, lines);
-      for (const [file, lines] of gitNumstat(baseline.gitRoot, null, ".")) addRepoPath(file, lines);
-      const changedFiles = [...lineMap.keys()].filter((file) => basename(file) !== docName);
-      const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
-      return { method: "git", score: scored.score, changedFiles, forced: scored.forced, baselineFound: true };
-    }
-    const { current, truncated } = computeCurrentHashes(cwd, scope, baseline, options);
-    const changedFiles = [];
+  if (baseline.gitRoot && baseline.head) {
+    if (!isGitRepository(baseline.gitRoot)) return unknownChange("git-unavailable", "git", { baselineFound: true });
+    const failuresBefore = gitFailureCount;
     const lineMap = new Map();
-    let forced = false;
-    for (const [file, entry] of current) {
-      const previous = baseline.files?.[file] ?? null;
-      if (previous !== null && previous.hash === entry.hash) continue;
-      changedFiles.push(file);
-      lineMap.set(file, 0);
-      if (previous !== null && fileWeight(file) >= 3 && Math.abs((entry.size ?? 0) - (previous.size ?? 0)) >= 4096) forced = true;
-    }
-    if (!truncated) {
-      for (const [file, previous] of Object.entries(baseline.files ?? {})) {
-        if (!inScope(file, scope) || !isSemanticFile(file)) continue;
-        if (typeof filter === "function" && !filter(file)) continue;
-        if (current.has(file)) continue;
-        const absolute = join(cwd, file);
-        if (!existsSync(absolute)) {
+    const toWorkspace = (file) => {
+      const workspaceFile = normalizeRel(relative(cwd, join(baseline.gitRoot, normalizeRel(file))));
+      return workspaceFile.startsWith("../") ? null : workspaceFile;
+    };
+    const addRepoPath = (file, lines) => {
+      const workspaceFile = toWorkspace(file);
+      if (workspaceFile === null || !inScope(workspaceFile, scope) || !isSemanticFile(workspaceFile)) return;
+      if (filter !== null && !filter(workspaceFile)) return;
+      lineMap.set(workspaceFile, Math.max(lineMap.get(workspaceFile) ?? 0, lines));
+    };
+    throwIfAborted(signal);
+    for (const file of gitStatusPaths(baseline.gitRoot, ".")) addRepoPath(file, 0);
+    for (const file of gitDiffPaths(baseline.gitRoot, baseline.head, ".")) addRepoPath(file, 0);
+    for (const [file, lines] of gitNumstat(baseline.gitRoot, baseline.head, ".")) addRepoPath(file, lines);
+    for (const [file, lines] of gitNumstat(baseline.gitRoot, null, ".")) addRepoPath(file, lines);
+    if (gitFailureCount > failuresBefore) return unknownChange("git-failed", "git", { baselineFound: true });
+    // Worktree changes that were already present at refresh time are part of the
+    // snapshot, not fresh changes; only files whose content moved beyond the
+    // baseline count as stale.
+    const changedFiles = [...lineMap.keys()].filter((file) => basename(file) !== docName && !unchangedSinceBaseline(cwd, baseline, file, options));
+    const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
+    return { method: "git", ok: true, unknownReason: null, score: scored.score, changedFiles, forced: scored.forced, baselineFound: true, incomplete: false };
+  }
+  const { current, truncated, reason } = computeCurrentHashes(cwd, scope, baseline, options);
+  const changedFiles = [];
+  const lineMap = new Map();
+  let forced = false;
+  for (const [file, entry] of current) {
+    const previous = baseline.files?.[file] ?? null;
+    if (previous !== null && previous.hash === entry.hash) continue;
+    changedFiles.push(file);
+    lineMap.set(file, 0);
+    if (previous !== null && fileWeight(file) >= 3 && Math.abs((entry.size ?? 0) - (previous.size ?? 0)) >= 4096) forced = true;
+  }
+  if (!truncated) {
+    for (const [file, previous] of Object.entries(baseline.files ?? {})) {
+      if (!inScope(file, scope) || !isSemanticFile(file)) continue;
+      if (typeof filter === "function" && !filter(file)) continue;
+      if (current.has(file)) continue;
+      const absolute = join(cwd, file);
+      if (!existsSync(absolute)) {
+        changedFiles.push(file);
+        lineMap.set(file, 0);
+        continue;
+      }
+      try {
+        const stat = statSync(absolute);
+        const sizeChanged = previous.size !== stat.size;
+        const mtimeChanged = previous.mtimeMs === undefined || stat.mtimeMs > previous.mtimeMs + 1000;
+        if (sizeChanged || mtimeChanged) {
           changedFiles.push(file);
           lineMap.set(file, 0);
-          continue;
         }
-        try {
-          const stat = statSync(absolute);
-          const sizeChanged = previous.size !== stat.size;
-          const mtimeChanged = previous.mtimeMs === undefined || stat.mtimeMs > previous.mtimeMs + 1000;
-          if (sizeChanged || mtimeChanged) {
-            changedFiles.push(file);
-            lineMap.set(file, 0);
-          }
-        } catch {
-          // unreadable files are not deletions
-        }
+      } catch {
+        // unreadable files are not deletions
       }
     }
-    const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
-    return { method: "hash", score: scored.score, changedFiles, forced: forced || scored.forced, baselineFound: true, incomplete: truncated };
   }
-  const sinceMs = Number.isFinite(options.sinceMs) ? options.sinceMs : Date.now();
-  const count = countChangedFilesSince(cwd, scope, sinceMs, { maxFiles: options.maxFiles, exclude: [docName], filterFile: filter });
-  return { method: "mtime", score: count, changedFiles: [], forced: false, baselineFound: false };
+  const scored = scoreChangedFiles(changedFiles, lineMap, singleFileChangeThreshold);
+  if (truncated) {
+    return { method: "hash", ok: false, unknownReason: reason ?? "scan-incomplete", score: scored.score, changedFiles, forced: forced || scored.forced, baselineFound: true, incomplete: true };
+  }
+  return { method: "hash", ok: true, unknownReason: null, score: scored.score, changedFiles, forced: forced || scored.forced, baselineFound: true, incomplete: false };
 }
 
-
+/**
+ * Map a change result to the tri-state alignment verdict. "aligned" only means
+ * the semantic score is below the refresh threshold; it does not mean the
+ * source files are byte-identical to the refresh snapshot.
+ */
+export function classifyAlignment(change, threshold) {
+  if (change === null || change === undefined) return { status: "unknown", reason: "no-change-result" };
+  if (change.ok === false) return { status: "unknown", reason: change.unknownReason ?? "unknown" };
+  const stale = change.forced === true || (Number.isFinite(change.score) ? change.score : 0) >= threshold;
+  return { status: stale ? "stale" : "aligned", reason: null };
+}

@@ -54,7 +54,7 @@ Do not include live tokens, credentials, or private repository contents in publi
 
 These are documented limitations, not protections. Do not read them as guarantees.
 
-- Git-backed change detection compares against `HEAD`, so a file left uncommitted at refresh time can keep reporting as stale, and a Git failure is folded into an empty result instead of an explicit `unknown` state.
+- Git-backed change detection subtracts worktree content that matches the refresh snapshot for files it can hash (bounded by `maxFileBytes`); a larger dirty file still reports as a change. Git failures and unavailable repositories now report `unknown` instead of an empty change set.
 - Change detection scans synchronously inside a deferred callback and lacks complete file, directory, byte, and time budgets; architecture documents are read in full before the output is trimmed.
 - `scripts/install-desktop.mjs` rollback covers package staging and removal, not the Profile rewrite, dependency linking, verification, and enable steps.
 - Threshold and UI settings are process-global; they are not per-session or per-workspace.

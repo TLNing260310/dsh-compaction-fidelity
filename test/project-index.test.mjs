@@ -182,3 +182,22 @@ test('an index scan observes an abort raised during the walk', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('verifyIndex reports a missing or corrupt baseline instead of an empty table', () => {
+  const root = fixture();
+  try {
+    buildIndex(root, { indexDir: '.dsh/compaction-fidelity' });
+    const baselinePath = join(root, '.dsh', 'compaction-fidelity', 'baseline.json');
+    rmSync(baselinePath, { force: true });
+    const missing = verifyIndex(root, '.dsh/compaction-fidelity');
+    assert.equal(missing.ok, false);
+    assert.equal(missing.baselineMissing, true);
+    writeFileSync(baselinePath, '{ not json', 'utf8');
+    const corrupt = verifyIndex(root, '.dsh/compaction-fidelity');
+    assert.equal(corrupt.ok, false);
+    assert.equal(corrupt.baselineCorrupt, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

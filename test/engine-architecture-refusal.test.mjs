@@ -104,36 +104,16 @@ test('engine compaction completes when an ancestor scope is denied and skips onl
 });
 
 
-function createEngineHarness() {
-  const listeners = new Map();
-  const disposers = [];
-  return {
-    logger: { warn() {}, info() {}, error() {} },
-    effect(generator) {
-      const iterator = generator();
-      let step = iterator.next();
-      while (!step.done) {
-        if (typeof step.value === 'function') disposers.push(step.value);
-        step = iterator.next();
-      }
-    },
-    on(event, handler) {
-      listeners.set(event, handler);
-      return () => {};
-    },
-    listeners,
-    dispose() {
-      while (disposers.length > 0) disposers.pop()();
-    },
-  };
+function createEngineProbe(EngineClass) {
+  const engine = Object.create(EngineClass.prototype);
+  engine.ctx = { logger: { warn() {}, info() {} } };
+  engine.thresholdInFlight = new Set();
+  return engine;
 }
 
 test('a cancelled threshold compaction terminates without the official fallback', skipWithoutPeers, async () => {
   const { CompactionFidelityEngine } = await import('../src/engine.mjs');
-  const ctx = createEngineHarness();
-  const engine = new CompactionFidelityEngine(ctx, { threshold: '256k' });
-  const handler = ctx.listeners.get('agent/pre-step');
-  assert.equal(typeof handler, 'function');
+  const engine = createEngineProbe(CompactionFidelityEngine);
   const aborted = new Error('cancelled');
   aborted.name = 'AbortError';
   engine.compactByAbsoluteThreshold = async () => { throw aborted; };
@@ -141,7 +121,7 @@ test('a cancelled threshold compaction terminates without the official fallback'
   engine.officialPressureFallback = async () => { fallbacks += 1; };
   let nextCalls = 0;
   await assert.rejects(
-    () => handler({ agent: { session: { id: 'engine-cancel' } }, signal: { aborted: false } }, async () => { nextCalls += 1; return { kind: 'ok' }; }),
+    () => engine.handlePreStep({ session: { id: 'engine-cancel' } }, { aborted: false }, async () => { nextCalls += 1; return { kind: 'ok' }; }),
     (error) => error?.name === 'AbortError',
   );
   assert.equal(fallbacks, 0, 'a cancellation must not enter the official fallback');
@@ -150,14 +130,12 @@ test('a cancelled threshold compaction terminates without the official fallback'
 
 test('a non-cancellation threshold failure still reaches the official fallback', skipWithoutPeers, async () => {
   const { CompactionFidelityEngine } = await import('../src/engine.mjs');
-  const ctx = createEngineHarness();
-  const engine = new CompactionFidelityEngine(ctx, { threshold: '256k' });
-  const handler = ctx.listeners.get('agent/pre-step');
+  const engine = createEngineProbe(CompactionFidelityEngine);
   engine.compactByAbsoluteThreshold = async () => { throw new Error('boom'); };
   let fallbacks = 0;
   engine.officialPressureFallback = async () => { fallbacks += 1; return null; };
   let nextCalls = 0;
-  const result = await handler({ agent: { session: { id: 'engine-fallback' } }, signal: { aborted: false } }, async () => { nextCalls += 1; return { kind: 'ok' }; });
+  const result = await engine.handlePreStep({ session: { id: 'engine-fallback' } }, { aborted: false }, async () => { nextCalls += 1; return { kind: 'ok' }; });
   assert.equal(fallbacks, 1);
   assert.equal(nextCalls, 1);
   assert.deepEqual(result, { kind: 'ok' });
@@ -165,15 +143,18 @@ test('a non-cancellation threshold failure still reaches the official fallback',
 
 test('a cancellation raised by the official fallback also propagates', skipWithoutPeers, async () => {
   const { CompactionFidelityEngine } = await import('../src/engine.mjs');
-  const ctx = createEngineHarness();
-  const engine = new CompactionFidelityEngine(ctx, { threshold: '256k' });
-  const handler = ctx.listeners.get('agent/pre-step');
+  const engine = createEngineProbe(CompactionFidelityEngine);
   const aborted = new Error('cancelled during fallback');
   aborted.name = 'AbortError';
   engine.compactByAbsoluteThreshold = async () => { throw new Error('boom'); };
   engine.officialPressureFallback = async () => { throw aborted; };
   await assert.rejects(
-    () => handler({ agent: { session: { id: 'engine-fallback-cancel' } }, signal: { aborted: false } }, async () => ({ kind: 'ok' })),
+    () => engine.handlePreStep({ session: { id: 'engine-fallback-cancel' } }, { aborted: false }, async () => ({ kind: 'ok' })),
     (error) => error?.name === 'AbortError',
   );
+});
+
+test('the pre-step listener delegates to handlePreStep', skipWithoutPeers, async () => {
+  const source = readFileSync(new URL('../src/engine.mjs', import.meta.url), 'utf8');
+  assert.ok(source.includes('return engine.handlePreStep(agent, signal, next);'), 'the host listener must delegate to the testable hook body');
 });

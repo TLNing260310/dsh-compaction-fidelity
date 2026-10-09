@@ -30,7 +30,7 @@ DSH Desktop 长会话用户、大仓库或多模块项目、中文或中英混�
 - **架构文档 Attestation**：每份 ARCHITECTURE.md 带 revision、structureHash、updateLogHash、entryCount；status 与 verify 会报告不一致。
 - **哈希归一化**：structureHash / updateLogHash 在 CRLF、行尾空白、连续空行归一化后计算，纯格式刷新不会误报不一致。
 - **排除/恢复语义**：文件被 exclude 期间发生的变化不追踪；re-include 会以当前状态重建 baseline，不会立即误报。
-- **显式对齐检查**：architecture check 直接报告 aligned/stale、语义变化分、检测方式、attestation revision 与一致性。
+- **显式对齐检查**：architecture check 直接报告 aligned/stale/unknown、语义变化分、检测方式、attestation revision 与一致性。aligned 只表示语义变化分低于刷新阈值，不表示源文件与快照逐字相同。
 - **跨语言保真指纹**：压缩前冻结精确值、CJK 字符二元组（词法指标）与结构指纹；压缩后比对并输出 L0–L3 分级，缺失精确值会自动追加 `fidelity_compensation` 补偿块，并写入 `.dsh/compaction-fidelity/fingerprints/`。
 - **安全加固**：scope / glob 校验、symlink 逃逸拒绝；registry、reminder、calibration 统一使用带锁 CAS 写入。
 - **调度加固**：pre-step 语义检查按 workspace/scope 节流；会话缓存有上限；fingerprint 文件只保留最新 500 份。

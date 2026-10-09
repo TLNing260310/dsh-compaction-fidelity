@@ -179,31 +179,39 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
     const engine = this;
     ctx.effect(function* lifecycle() {
       yield ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
-        if (!signal?.aborted) {
-          const sessionKey = String(agent?.session?.id ?? "session");
-          if (!engine.thresholdInFlight.has(sessionKey)) {
-            engine.thresholdInFlight.add(sessionKey);
-            try {
-              await engine.compactByAbsoluteThreshold(agent, signal);
-            } catch (error) {
-              // Cancellation terminates the operation; it is not a plugin
-              // failure and must never enter the fallback path.
-              if (isCancellation(signal, error)) throw error;
-              ctx.logger?.warn?.("compaction-fidelity threshold check failed: " + (error instanceof Error ? error.message : String(error)) + "; falling back to official compaction");
-              try {
-                await engine.officialPressureFallback(agent, signal);
-              } catch (fallbackError) {
-                if (isCancellation(signal, fallbackError)) throw fallbackError;
-                ctx.logger?.warn?.("compaction-fidelity official fallback failed: " + (fallbackError instanceof Error ? fallbackError.message : String(fallbackError)));
-              }
-            } finally {
-              engine.thresholdInFlight.delete(sessionKey);
-            }
-          }
-        }
-        return next();
+        return engine.handlePreStep(agent, signal, next);
       });
     }, 'compaction-fidelity absolute-threshold pressure');
+  }
+
+  /**
+   * Pre-step threshold hook body. Kept as a method so the cancellation policy
+   * can be verified without constructing a host runtime.
+   */
+  async handlePreStep(agent, signal, next) {
+    if (!signal?.aborted) {
+      const sessionKey = String(agent?.session?.id ?? "session");
+      if (!this.thresholdInFlight.has(sessionKey)) {
+        this.thresholdInFlight.add(sessionKey);
+        try {
+          await this.compactByAbsoluteThreshold(agent, signal);
+        } catch (error) {
+          // Cancellation terminates the operation; it is not a plugin
+          // failure and must never enter the fallback path.
+          if (isCancellation(signal, error)) throw error;
+          this.ctx.logger?.warn?.("compaction-fidelity threshold check failed: " + (error instanceof Error ? error.message : String(error)) + "; falling back to official compaction");
+          try {
+            await this.officialPressureFallback(agent, signal);
+          } catch (fallbackError) {
+            if (isCancellation(signal, fallbackError)) throw fallbackError;
+            this.ctx.logger?.warn?.("compaction-fidelity official fallback failed: " + (fallbackError instanceof Error ? fallbackError.message : String(fallbackError)));
+          }
+        } finally {
+          this.thresholdInFlight.delete(sessionKey);
+        }
+      }
+    }
+    return next();
   }
 
   runtimeFor(agent) {

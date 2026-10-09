@@ -1,9 +1,10 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeArchitectureBaseline, detectSemanticChanges, gitRepoCacheSize, isGitRepository, readArchitectureBaseline, resetGitRepoCache, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
+import { classifyAlignment, computeArchitectureBaseline, detectSemanticChanges, gitRepoCacheSize, isGitRepository, readArchitectureBaseline, resetGitRepoCache, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-changes-"));
 const options = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 20000, maxFileBytes: 1024 * 1024 };
@@ -76,6 +77,8 @@ test("hash mode honors size and sensitive-file filters", () => {
     const change = detectSemanticChanges(cwd, ".", { ...options, maxFileBytes: 64, maxHashBytes: 1024 });
     assert.equal(change.method, "hash");
     assert.equal(change.incomplete, true);
+    assert.equal(change.ok, false);
+    assert.equal(change.unknownReason, "budget-exhausted");
     assert.ok(!change.changedFiles.includes("large.json"));
     assert.ok(!change.changedFiles.includes("secrets.json"));
   } finally {
@@ -105,7 +108,10 @@ test("baseline writes reject a linked index directory instead of escaping the wo
     );
     assert.equal(existsSync(join(outside, "compaction-fidelity", "architecture-baseline.json")), false);
     assert.equal(readArchitectureBaseline(cwd, ".", localOptions.indexDir), null);
-    assert.equal(detectSemanticChanges(cwd, ".", localOptions).baselineFound, false);
+    const linkedBaseline = detectSemanticChanges(cwd, ".", localOptions);
+    assert.equal(linkedBaseline.baselineFound, true);
+    assert.equal(linkedBaseline.ok, false);
+    assert.equal(linkedBaseline.unknownReason, "corrupt-baseline");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
@@ -184,6 +190,131 @@ test('a change scan honors cancellation before reading further files', () => {
       }),
       (error) => error?.name === "AbortError",
     );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+
+test("a missing baseline is an explicit unknown state", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-no-baseline-"));
+  try {
+    writeFileSync(join(cwd, "app.ts"), "export const app = 1;\n", "utf8");
+    const change = detectSemanticChanges(cwd, ".", { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md" });
+    assert.equal(change.ok, false);
+    assert.equal(change.unknownReason, "missing-baseline");
+    assert.equal(change.baselineFound, false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a corrupt baseline is an explicit unknown state", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-corrupt-baseline-"));
+  try {
+    writeFileSync(join(cwd, "app.ts"), "export const app = 1;\n", "utf8");
+    mkdirSync(join(cwd, ".dsh", "compaction-fidelity"), { recursive: true });
+    writeFileSync(join(cwd, ".dsh", "compaction-fidelity", "architecture-baseline.json"), "{ not json", "utf8");
+    const change = detectSemanticChanges(cwd, ".", { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md" });
+    assert.equal(change.ok, false);
+    assert.equal(change.unknownReason, "corrupt-baseline");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("alignment classification is tri-state and threshold-based", () => {
+  assert.deepEqual(classifyAlignment({ ok: true, score: 0, forced: false }, 30), { status: "aligned", reason: null });
+  assert.deepEqual(classifyAlignment({ ok: true, score: 45, forced: false }, 30), { status: "stale", reason: null });
+  assert.deepEqual(classifyAlignment({ ok: true, score: 0, forced: true }, 30), { status: "stale", reason: null });
+  assert.deepEqual(classifyAlignment({ ok: false, unknownReason: "git-failed" }, 30), { status: "unknown", reason: "git-failed" });
+});
+
+test("an exhausted hash budget is unknown, not stale", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-budget-unknown-"));
+  try {
+    const localOptions = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 100, maxFileBytes: 1024 * 1024 };
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;\n", "utf8");
+    writeFileSync(join(cwd, "src", "b.ts"), "export const b = 1;\n", "utf8");
+    writeArchitectureBaseline(cwd, ".", computeArchitectureBaseline(cwd, ".", localOptions), localOptions.indexDir);
+    const change = detectSemanticChanges(cwd, ".", { ...localOptions, maxHashFiles: 1 });
+    assert.equal(change.ok, false);
+    assert.equal(change.unknownReason, "budget-exhausted");
+    assert.equal(classifyAlignment(change, 30).status, "unknown");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("git mode ignores worktree changes already present in the baseline snapshot", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-git-snapshot-"));
+  try {
+    try {
+      execFileSync("git", ["-C", cwd, "init"], { stdio: "ignore" });
+      execFileSync("git", ["-C", cwd, "config", "user.email", "test@example.com"], { stdio: "ignore" });
+      execFileSync("git", ["-C", cwd, "config", "user.name", "Test"], { stdio: "ignore" });
+      writeFileSync(join(cwd, "app.ts"), "export const app = 1;\n", "utf8");
+      execFileSync("git", ["-C", cwd, "add", "app.ts"], { stdio: "ignore" });
+      execFileSync("git", ["-C", cwd, "commit", "-m", "init"], { stdio: "ignore" });
+    } catch {
+      t.skip("git is not available");
+      return;
+    }
+    const localOptions = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 100, maxFileBytes: 1024 * 1024 };
+    writeFileSync(join(cwd, "app.ts"), "export const app = 2;\n", "utf8");
+    writeArchitectureBaseline(cwd, ".", computeArchitectureBaseline(cwd, ".", localOptions), localOptions.indexDir);
+    const unchanged = detectSemanticChanges(cwd, ".", localOptions);
+    assert.equal(unchanged.method, "git");
+    assert.equal(unchanged.ok, true);
+    assert.deepEqual(unchanged.changedFiles, []);
+    assert.equal(unchanged.score, 0);
+    writeFileSync(join(cwd, "app.ts"), "export const app = 3;\n", "utf8");
+    const moved = detectSemanticChanges(cwd, ".", localOptions);
+    assert.equal(moved.ok, true);
+    assert.ok(moved.changedFiles.includes("app.ts"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a baseline whose git repository is gone reports git-unavailable", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-git-gone-"));
+  try {
+    mkdirSync(join(cwd, "not-a-repo"), { recursive: true });
+    writeFileSync(join(cwd, "app.ts"), "export const app = 1;\n", "utf8");
+    writeArchitectureBaseline(cwd, ".", { at: Date.now(), head: "0123456789abcdef", gitRoot: join(cwd, "not-a-repo"), files: {} }, ".dsh/compaction-fidelity");
+    const change = detectSemanticChanges(cwd, ".", { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md" });
+    assert.equal(change.ok, false);
+    assert.equal(change.unknownReason, "git-unavailable");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a failing git query reports git-failed instead of an empty change set", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-git-failed-"));
+  try {
+    try {
+      execFileSync("git", ["-C", cwd, "init"], { stdio: "ignore" });
+      execFileSync("git", ["-C", cwd, "config", "user.email", "test@example.com"], { stdio: "ignore" });
+      execFileSync("git", ["-C", cwd, "config", "user.name", "Test"], { stdio: "ignore" });
+      writeFileSync(join(cwd, "app.ts"), "export const app = 1;\n", "utf8");
+      execFileSync("git", ["-C", cwd, "add", "app.ts"], { stdio: "ignore" });
+      execFileSync("git", ["-C", cwd, "commit", "-m", "init"], { stdio: "ignore" });
+    } catch {
+      t.skip("git is not available");
+      return;
+    }
+    writeArchitectureBaseline(cwd, ".", {
+      at: Date.now(),
+      head: "0123456789abcdef0123456789abcdef01234567",
+      gitRoot: cwd,
+      files: { "app.ts": { hash: "deadbeef", size: 1 } },
+    }, ".dsh/compaction-fidelity");
+    const change = detectSemanticChanges(cwd, ".", { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md" });
+    assert.equal(change.ok, false);
+    assert.equal(change.unknownReason, "git-failed");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

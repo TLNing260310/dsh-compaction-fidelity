@@ -750,7 +750,21 @@ export function verifyIndex(root, options = DEFAULT_INDEX_DIR) {
   if (!policyAllowsCached(dir, resolved)) return { ok: false, reason: 'index built under a different read policy' };
   const index = loadIndex(root, indexDir);
   if (index === null) return { ok: false, reason: 'index missing' };
-  const baseline = readJsonIfExists(join(dir, 'baseline.json'), { files: {} });
+  // A missing or unparsable baseline is a state of its own: silently treating
+  // it as an empty file table would report "ok" for a workspace we cannot judge.
+  const baselineFile = join(dir, 'baseline.json');
+  if (!existsSync(baselineFile)) {
+    return { ok: false, reason: 'baseline missing', baselineMissing: true, generatedAt: index.generatedAt, changed: [], missing: [], indexed: index.stats.files };
+  }
+  let baseline = null;
+  try {
+    baseline = JSON.parse(readFileSync(baselineFile, 'utf8'));
+  } catch {
+    baseline = null;
+  }
+  if (baseline === null || typeof baseline !== 'object' || baseline.files === null || typeof baseline.files !== 'object' || Array.isArray(baseline.files)) {
+    return { ok: false, reason: 'baseline corrupt', baselineCorrupt: true, generatedAt: index.generatedAt, changed: [], missing: [], indexed: index.stats.files };
+  }
   const changed = [];
   const missing = [];
   for (const [file, hash] of Object.entries(baseline.files ?? {})) {

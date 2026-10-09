@@ -213,3 +213,23 @@ test('the architecture command reports a missing document only when policy allow
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('the architecture command reports unknown alignment when the baseline is missing', skipWithoutPeers, async () => {
+  const { root, command, agent } = await setupEntryTest();
+  try {
+    fixtureWorkspace(root);
+    const created = await command.handler({ rawInput: 'architecture create app', agent });
+    assert.equal(created.kind, 'success');
+    rmSync(join(root, '.dsh', 'compaction-fidelity', 'architecture-baseline.json'), { force: true });
+    const checked = await command.handler({ rawInput: 'architecture check app', agent });
+    assert.equal(checked.kind, 'success');
+    assert.ok(checked.text.includes('对齐=unknown'), checked.text);
+    assert.ok(checked.text.includes('missing-baseline'), checked.text);
+    const status = await command.handler({ rawInput: 'architecture status app', agent });
+    assert.equal(status.kind, 'success');
+    assert.ok(status.text.includes('对齐状态：unknown'), status.text);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -33,7 +33,7 @@ See REFERENCES.md for the projects and research that informed this work, SECURIT
 - Architecture attestation: every ARCHITECTURE.md carries revision + structureHash + updateLogHash + entryCount; `architecture status` and `architecture verify` report mismatches.
 - Attestation hashing normalizes CRLF, trailing whitespace, and repeated blank lines, so formatting-only refresh does not create false inconsistency.
 - Re-include semantics: changes made while a scope pattern is excluded are not tracked; re-include starts from a fresh baseline of the current state.
-- Explicit alignment check: `architecture check <scope>` reports aligned/stale, semantic score, detection method, attestation revision, and consistency.
+- Explicit alignment check: `architecture check <scope>` reports aligned/stale/unknown, semantic score, detection method, attestation revision, and consistency. `aligned` means the semantic score is below the refresh threshold, not that the source files are byte-identical to the snapshot.
 - Anchor quality: anchors are deduplicated by canonical identity, scored by relation strength, and capped per kind (tests 2, docs 1, database 2).
 - Security hardening: scopes and glob patterns are validated, symlink escapes are rejected, and registry / reminder / calibration stores use locked compare-and-swap writes.
 - Scheduling hardening: pre-step semantic checks are throttled per workspace/scope, session caches are capped, and fingerprint files are pruned to the newest 500.

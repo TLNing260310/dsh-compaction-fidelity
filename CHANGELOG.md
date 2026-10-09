@@ -126,6 +126,12 @@ rather than assumed, and are now covered by characterisation tests in
   the official fallback; queued index builds carry the abort signal, an
   already-cancelled step schedules nothing, and long scans check the signal
   before reading and between entries.
+- Architecture alignment is now tri-state: `aligned` (semantic score below the
+  refresh threshold), `stale`, or `unknown` for a missing/corrupt baseline, a
+  failed or unavailable Git repository, an incomplete scan, or an exhausted
+  hash budget. Git mode subtracts worktree changes already present in the
+  refresh snapshot instead of comparing only against `HEAD`, and `verifyIndex`
+  reports a missing or corrupt baseline instead of treating it as empty.
 
 ### Known limitations
 
@@ -141,6 +147,8 @@ rather than assumed, and are now covered by characterisation tests in
 - `architecturePrompted` is not introduced; prompt state remains in-memory.
 - Change detection is not gated on Git tracking; this round does not claim that
   untracked files escape hash detection.
+- `aligned` reflects the semantic score against the refresh threshold; it does
+  not mean the source files are byte-identical to the refresh snapshot.
 
 
 ## 0.3.1
