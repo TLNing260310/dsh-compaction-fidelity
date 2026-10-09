@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createGlobalWorkspaceFileFilter } from "../src/architecture-registry.mjs";
 import { classifyAlignment, computeArchitectureBaseline, detectSemanticChanges, gitRepoCacheSize, isGitRepository, readArchitectureBaseline, resetGitRepoCache, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-changes-"));
@@ -315,6 +316,39 @@ test("a failing git query reports git-failed instead of an empty change set", (t
     const change = detectSemanticChanges(cwd, ".", { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md" });
     assert.equal(change.ok, false);
     assert.equal(change.unknownReason, "git-failed");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+
+test("a child scope's exclude is enforced before a root scan reads the file", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-global-policy-"));
+  try {
+    const localOptions = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 100, maxFileBytes: 1024 * 1024 };
+    mkdirSync(join(cwd, "app"), { recursive: true });
+    writeFileSync(join(cwd, "app", "hidden.ts"), "export const hidden = 1;\n", "utf8");
+    writeFileSync(join(cwd, "app", "visible.ts"), "export const visible = 1;\n", "utf8");
+    const registry = { version: 2, scopes: { app: { doc: "ARCHITECTURE.md", include: [], exclude: ["hidden.ts"] } } };
+    const filter = createGlobalWorkspaceFileFilter(registry);
+    const baseline = computeArchitectureBaseline(cwd, ".", { ...localOptions, filterFile: filter });
+    assert.ok(Object.keys(baseline.files).includes("app/visible.ts"), "a permitted file must be registered");
+    assert.equal(Object.keys(baseline.files).includes("app/hidden.ts"), false, "an excluded file must not be registered");
+    writeArchitectureBaseline(cwd, ".", baseline, localOptions.indexDir);
+    writeFileSync(join(cwd, "app", "visible.ts"), "export const visible = 2;\n", "utf8");
+    writeFileSync(join(cwd, "app", "hidden.ts"), "export const hidden = 2;\n", "utf8");
+    let hiddenReads = 0;
+    const change = detectSemanticChanges(cwd, ".", {
+      ...localOptions,
+      filterFile: filter,
+      readFile: (file) => {
+        if (String(file).includes("hidden.ts")) hiddenReads += 1;
+        return readFileSync(file, "utf8");
+      },
+    });
+    assert.equal(hiddenReads, 0, "a policy-excluded file must not be read");
+    assert.ok(change.changedFiles.includes("app/visible.ts"));
+    assert.equal(change.changedFiles.includes("app/hidden.ts"), false);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

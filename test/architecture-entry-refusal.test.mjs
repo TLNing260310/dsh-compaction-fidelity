@@ -233,3 +233,23 @@ test('the architecture command reports unknown alignment when the baseline is mi
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('a root baseline update does not register a child-scope excluded file', skipWithoutPeers, async () => {
+  const { root, command, agent } = await setupEntryTest();
+  try {
+    fixtureWorkspace(root);
+    writeFileSync(join(root, 'app', 'hidden.ts'), 'export const hidden = 1;\n', 'utf8');
+    writeRegistry(root, { app: { doc: 'ARCHITECTURE.md', include: [], exclude: ['hidden.ts'] } });
+    const created = await command.handler({ rawInput: 'architecture create .', agent });
+    assert.equal(created.kind, 'success');
+    const updated = await command.handler({ rawInput: 'architecture update . manual note', agent });
+    assert.equal(updated.kind, 'success');
+    const store = JSON.parse(readFileSync(join(root, '.dsh', 'compaction-fidelity', 'architecture-baseline.json'), 'utf8'));
+    const files = Object.keys(store.scopes['.']?.files ?? {});
+    assert.ok(files.includes('app/index.ts'), 'a permitted file must be registered');
+    assert.equal(files.includes('app/hidden.ts'), false, 'a child-scope excluded file must not be registered');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

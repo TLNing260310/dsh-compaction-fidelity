@@ -35,7 +35,7 @@ import { mutateArchitectureDocument } from './architecture-io.mjs';
 import { architectureBaselineFromIndex, classifyAlignment, computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
-import { classifyRegistryWriteError, createGlobalWorkspaceFileFilter, createWorkspaceFileFilter, isValidScopePattern, managedDocOutcomeFor, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
+import { classifyRegistryWriteError, createGlobalWorkspaceFileFilter, isValidScopePattern, managedDocOutcomeFor, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
 import { preStepStopped, readArchitectureConsent } from './step-policy.mjs';
 import { importFidelityCalibration, readFidelityCalibration, summarizeFidelityCalibration } from './fidelity-calibration.mjs';
 export const inject = ['commands', 'tools'];
@@ -304,11 +304,11 @@ export function apply(ctx, config = {}) {
     architectureScopes.set(session, new Set(Object.keys(registry.scopes)));
     return registry;
   };
-  const architectureManagedFilter = (cwd, scope) => {
-    const registry = getArchitectureRegistry(cwd);
-    const rules = managedScopeRules(registry, scope);
-    return rules === null || rules === undefined ? null : createWorkspaceFileFilter(registry, scope);
-  };
+  // One workspace-wide read policy for every scan and retrieval entry: a rule
+  // registered for a child scope (or the root) constrains the same path no
+  // matter which scope asked, so root status/update cannot read files a child
+  // scope excludes.
+  const architectureManagedFilter = (cwd) => createGlobalWorkspaceFileFilter(getArchitectureRegistry(cwd));
   const architectureScopeRules = (cwd, scope) => managedScopeRules(getArchitectureRegistry(cwd), scope);
   const listArchitectureScopes = (cwd) => Object.keys(getArchitectureRegistry(cwd).scopes);
 
@@ -1016,7 +1016,10 @@ export function apply(ctx, config = {}) {
 
     ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
       const stepCwd = workspaceOf(agent);
-      queueIndex(stepCwd, { signal });
+      // Schedule background work only after the host allowed the step to
+      // continue: a rejection can arrive after an async policy delay, and an
+      // index started before that decision would already have read and written
+      // behind a refused step. A throw from next() skips the queue entirely.
       const decision = await next();
       // A cancelled or rejected step must not produce any further side effect:
       // the architecture branch below can create documents, register scopes, and
@@ -1025,6 +1028,7 @@ export function apply(ctx, config = {}) {
         cancelQueuedIndex(stepCwd);
         return decision;
       }
+      queueIndex(stepCwd, { signal });
       if (cfg.architectureDoc && getGlobalState()?.enabled !== false && !isMasterDisabled()) {
         // Helpers below are best effort: a failure must leave the host decision
         // untouched instead of breaking the agent step.

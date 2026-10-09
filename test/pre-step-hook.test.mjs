@@ -430,3 +430,47 @@ test('a too-large document is refused before any refresh mutation', { skip: hasD
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('a slow rejection cannot leave a queued index behind', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-slow-reject-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'index.ts'), 'export const value = 1;\n', 'utf8');
+    const ctx = createContext(apply, { autoIndex: true });
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'slow-reject-session');
+    const startedAt = Date.now();
+    const result = await handler({ agent, signal: { aborted: false } }, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return { kind: 'reject' };
+    });
+    assert.equal(result.kind, 'reject');
+    assert.ok(Date.now() - startedAt >= 380, 'the host decision must be awaited');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'index.json')), false, 'a slow rejection must not schedule a scan');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a thrown host failure cannot schedule an index', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-throw-queue-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'index.ts'), 'export const value = 1;\n', 'utf8');
+    const ctx = createContext(apply, { autoIndex: true });
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'throw-queue-session');
+    await assert.rejects(
+      () => handler({ agent, signal: { aborted: false } }, async () => { throw new Error('host failed'); }),
+      /host failed/,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'index.json')), false, 'a thrown decision must not schedule a scan');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

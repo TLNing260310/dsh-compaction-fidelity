@@ -126,6 +126,11 @@ rather than assumed, and are now covered by characterisation tests in
   the official fallback; queued index builds carry the abort signal, an
   already-cancelled step schedules nothing, and long scans check the signal
   before reading and between entries.
+- Every scan and retrieval entry now shares one workspace-wide read policy, so a
+  child scope's exclude also constrains root status and baseline updates; the
+  pre-step hook schedules the background index only after the host allows the
+  step to continue, so a slow rejection, throw, or cancellation cannot read or
+  write behind a refused step.
 - Architecture alignment is now tri-state: `aligned` (semantic score below the
   refresh threshold), `stale`, or `unknown` for a missing/corrupt baseline, a
   failed or unavailable Git repository, an incomplete scan, or an exhausted
