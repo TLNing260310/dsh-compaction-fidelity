@@ -186,10 +186,14 @@ export class CompactionFidelityEngine extends BasicCompactionEngine {
             try {
               await engine.compactByAbsoluteThreshold(agent, signal);
             } catch (error) {
+              // Cancellation terminates the operation; it is not a plugin
+              // failure and must never enter the fallback path.
+              if (isCancellation(signal, error)) throw error;
               ctx.logger?.warn?.("compaction-fidelity threshold check failed: " + (error instanceof Error ? error.message : String(error)) + "; falling back to official compaction");
               try {
                 await engine.officialPressureFallback(agent, signal);
               } catch (fallbackError) {
+                if (isCancellation(signal, fallbackError)) throw fallbackError;
                 ctx.logger?.warn?.("compaction-fidelity official fallback failed: " + (fallbackError instanceof Error ? fallbackError.message : String(fallbackError)));
               }
             } finally {

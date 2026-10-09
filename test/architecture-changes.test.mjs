@@ -165,3 +165,26 @@ test("a filtered baseline scan never reads an excluded file", () => {
     rmSync(filteredRoot, { recursive: true, force: true });
   }
 });
+
+
+test('a change scan honors cancellation before reading further files', () => {
+  const cwd = mkdtempSync(join(tmpdir(), "compaction-fidelity-scan-abort-"));
+  try {
+    const localOptions = { indexDir: ".dsh/compaction-fidelity", docName: "ARCHITECTURE.md", maxFiles: 100, maxFileBytes: 1024 * 1024 };
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;\n", "utf8");
+    writeFileSync(join(cwd, "src", "b.ts"), "export const b = 1;\n", "utf8");
+    writeArchitectureBaseline(cwd, ".", computeArchitectureBaseline(cwd, ".", localOptions), localOptions.indexDir);
+    const controller = new AbortController();
+    assert.throws(
+      () => detectSemanticChanges(cwd, ".", {
+        ...localOptions,
+        signal: controller.signal,
+        filterFile: () => { controller.abort(); return true; },
+      }),
+      (error) => error?.name === "AbortError",
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

@@ -18,6 +18,7 @@ import {
   readJsonIfExists,
   sha256,
   SKIP_EXTENSIONS,
+  throwIfAborted,
   toPosix,
   uniqueBy,
   writeFileAtomicSync,
@@ -199,8 +200,10 @@ function walkWorkspace(root, options) {
   const maxFiles = options.maxFiles;
   const maxFileBytes = options.maxFileBytes;
   const readFile = typeof options.readFile === 'function' ? options.readFile : readFileSync;
+  const signal = options.signal;
   const stack = [''];
   while (stack.length > 0 && out.length < maxFiles) {
+    throwIfAborted(signal);
     const relDir = stack.pop();
     const absDir = relDir.length === 0 ? root : join(root, relDir);
     let entries;
@@ -210,6 +213,7 @@ function walkWorkspace(root, options) {
       continue;
     }
     for (const entry of entries) {
+      throwIfAborted(signal);
       if (out.length >= maxFiles) break;
       if (entry.name.startsWith('.') && entry.name !== '.github') continue;
       const rel = toPosix(relDir.length === 0 ? entry.name : `${relDir}/${entry.name}`);
@@ -450,6 +454,7 @@ function buildIndexData(root, options = {}) {
     maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
     ...(typeof options.filterFile === 'function' ? { filterFile: options.filterFile } : {}),
     ...(typeof options.readFile === 'function' ? { readFile: options.readFile } : {}),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   resolveImports(root, files);
   const importedBy = new Map();

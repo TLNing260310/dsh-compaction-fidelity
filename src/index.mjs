@@ -473,9 +473,12 @@ export function apply(ctx, config = {}) {
         // filter options may be reused.
         const current = retrievalContext(cwd);
         if (current.blocked) return;
-        buildIndex(cwd, current.options);
+        buildIndex(cwd, signal === undefined || signal === null ? current.options : { ...current.options, signal });
         ctx.logger?.info?.(`dsh-compaction-fidelity: Compaction-Fidelity index built for ${cwd}`);
       } catch (error) {
+        // An aborted scan is not a failure: it must not log a warning or leave
+        // a partially written index behind.
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') return;
         ctx.logger?.warn?.(`dsh-compaction-fidelity: Compaction-Fidelity index build failed for ${cwd}: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         queuedIndexes.delete(cwd);

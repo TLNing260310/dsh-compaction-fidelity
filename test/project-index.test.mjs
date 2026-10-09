@@ -148,3 +148,37 @@ test('rejects a linked parent for index writes and purge', (t) => {
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+
+test('an index scan honors a pre-aborted signal and writes nothing', () => {
+  const root = fixture();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    assert.throws(
+      () => buildIndex(root, { indexDir: '.dsh/compaction-fidelity', signal: controller.signal }),
+      (error) => error?.name === 'AbortError',
+    );
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'index.json')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an index scan observes an abort raised during the walk', () => {
+  const root = fixture();
+  try {
+    const controller = new AbortController();
+    assert.throws(
+      () => buildIndex(root, {
+        indexDir: '.dsh/compaction-fidelity',
+        signal: controller.signal,
+        filterFile: () => { controller.abort(); return true; },
+      }),
+      (error) => error?.name === 'AbortError',
+    );
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'index.json')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

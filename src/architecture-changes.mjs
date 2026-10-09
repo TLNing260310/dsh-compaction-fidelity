@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { architectureHash, assertWorkspaceContained, mutateArchitectureDocument } from "./architecture-io.mjs";
 import { countChangedFilesSince } from "./architecture-doc.mjs";
+import { throwIfAborted } from "./util.mjs";
 import { buildIndex, isSensitiveIndexPath } from "./project-index.mjs";
 
 const SEMANTIC_EXTENSIONS = new Set([
@@ -250,6 +251,7 @@ export function computeArchitectureBaseline(cwd, scope, options = {}) {
     write: false,
     ...(filterFile === undefined ? {} : { filterFile }),
     ...(typeof options.readFile === "function" ? { readFile: options.readFile } : {}),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   return architectureBaselineFromIndex(cwd, normalizedScope, index, options);
 }
@@ -257,10 +259,12 @@ export function computeArchitectureBaseline(cwd, scope, options = {}) {
 function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
   const out = [];
   const maxFileBytes = Number.isFinite(options.maxFileBytes) && options.maxFileBytes > 0 ? options.maxFileBytes : 1024 * 1024;
+  const signal = options.signal;
   let truncated = false;
   const base = scope === "." ? root : join(root, scope);
   const stack = [base];
   while (stack.length > 0 && out.length < maxFiles) {
+    throwIfAborted(signal);
     const dir = stack.pop();
     let entries;
     try {
@@ -270,6 +274,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
       continue;
     }
     for (const entry of entries) {
+      throwIfAborted(signal);
       if (out.length >= maxFiles) {
         truncated = true;
         break;
@@ -303,6 +308,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
 function computeCurrentHashes(cwd, scope, baseline, options) {
   const maxHashFiles = Number.isInteger(options.maxHashFiles) && options.maxHashFiles > 0 ? options.maxHashFiles : 3000;
   const readFile = typeof options.readFile === "function" ? options.readFile : readFileSync;
+  const signal = options.signal;
   const maxHashBytes = Number.isInteger(options.maxHashBytes) && options.maxHashBytes > 0 ? options.maxHashBytes : 32 * 1024 * 1024;
   const walk = walkSemanticFiles(cwd, scope, options.maxFiles ?? 20000, options.filterFile, { maxFileBytes: options.maxFileBytes ?? 1024 * 1024 });
   const rank = (entry) => {
@@ -317,6 +323,7 @@ function computeCurrentHashes(cwd, scope, baseline, options) {
   let hashedBytes = 0;
   let truncated = walk.truncated;
   for (const entry of ordered) {
+    throwIfAborted(signal);
     if (current.size >= maxHashFiles || hashedBytes >= maxHashBytes) {
       truncated = true;
       break;

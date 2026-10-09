@@ -122,6 +122,10 @@ rather than assumed, and are now covered by characterisation tests in
   from one filtered index snapshot; refresh also applies the file-layer gate
   first, so an oversized, unreadable, symlinked, or unsafe document is refused
   before any mutation.
+- Cancellation now terminates the absolute-threshold path instead of entering
+  the official fallback; queued index builds carry the abort signal, an
+  already-cancelled step schedules nothing, and long scans check the signal
+  before reading and between entries.
 
 ### Known limitations
 

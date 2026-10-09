@@ -243,3 +243,16 @@ export function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
+
+
+/** A DOM-style abort error other modules can recognize without importing the host. */
+export function createAbortError(message = 'operation aborted') {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+export function throwIfAborted(signal) {
+  if (signal?.aborted === true) throw createAbortError();
+}
