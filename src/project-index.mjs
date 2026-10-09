@@ -198,6 +198,7 @@ function walkWorkspace(root, options) {
   const out = [];
   const maxFiles = options.maxFiles;
   const maxFileBytes = options.maxFileBytes;
+  const readFile = typeof options.readFile === 'function' ? options.readFile : readFileSync;
   const stack = [''];
   while (stack.length > 0 && out.length < maxFiles) {
     const relDir = stack.pop();
@@ -231,7 +232,7 @@ function walkWorkspace(root, options) {
       let text = '';
       if (isTextFile(rel)) {
         try {
-          text = readFileSync(join(root, rel), 'utf8');
+          text = readFile(join(root, rel), 'utf8');
         } catch {
           text = '';
         }
@@ -448,6 +449,7 @@ function buildIndexData(root, options = {}) {
     maxFiles: options.maxFiles ?? 20000,
     maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
     ...(typeof options.filterFile === 'function' ? { filterFile: options.filterFile } : {}),
+    ...(typeof options.readFile === 'function' ? { readFile: options.readFile } : {}),
   });
   resolveImports(root, files);
   const importedBy = new Map();

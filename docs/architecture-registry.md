@@ -68,19 +68,20 @@ document resolution:
 
 `create`, `refresh`, `update`, and baseline writes re-check the policy
 immediately before mutating, and never reuse a target resolved under an older
-registry. A document mutation that succeeds while the baseline write fails is
-reported as a partial completion (`mutationApplied: true`,
+registry. Refresh also applies the reader's file-layer gate first: an oversized,
+unreadable, symlinked, or unsafe document is refused before it can be replaced.
+A document mutation that succeeds while the baseline write fails is reported as
+a partial completion (`mutationApplied: true`,
 `baselineWritten: false`) with a diagnostic log entry; it is not reported as a
 full success or as a failure, and this round does not promise an automatic
 retry.
 
 ## Concurrency limits (not solved by this design)
 
-- Registry reads and writes are not protected by a cross-process lock:
-  concurrent writers in separate processes are undefined.
-- The registry, the document, and the baseline are not covered by a joint
-  transaction. This round reuses the existing lock/atomic-replace/CAS helpers
-  and does not promise cross-file atomicity.
+- Single-file registry writes use the existing file lock, atomic replace, and
+  CAS, so separate processes do contend on that one file within the lock
+  timeout. The lock does not cover the registry, document, and baseline as one
+  transaction, and cross-file atomicity is still not promised.
 - There is no `registry-changed` secondary validation between the policy
   decision and the read, so a concurrent rule change inside that window is not
   detected. A post-read check could only suppress a result; it cannot undo a

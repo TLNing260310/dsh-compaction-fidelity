@@ -112,10 +112,23 @@ rather than assumed, and are now covered by characterisation tests in
   partial completion (`mutationApplied: true`, `baselineWritten: false`) with a diagnostic
   log entry instead of being reported as a full success or failure.
 
+- Baseline and change scans now apply the active read policy before reading a
+  file, so an excluded file is never pulled into memory even though it was
+  already absent from the projected result.
+- A queued index build re-reads the registry policy at execution time instead
+  of reusing the enqueue-time policy, and a cancelled or rejected step drops
+  its queued index build.
+- Architecture create and refresh render the document and write the baseline
+  from one filtered index snapshot; refresh also applies the file-layer gate
+  first, so an oversized, unreadable, symlinked, or unsafe document is refused
+  before any mutation.
+
 ### Known limitations
 
-- Registry reads and writes are not covered by a cross-process lock; concurrent
-  writers in separate processes are undefined.
+- Single-file registry writes use the existing file lock, atomic replace, and
+  CAS, but the lock does not cover the registry, document, and baseline as one
+  cross-file transaction; concurrent writers in separate processes on that
+  joint state remain undefined.
 - Registry, document, and baseline are not covered by a joint transaction; this
   round reuses the existing lock/atomic-replace/CAS helpers and does not promise
   cross-file atomicity.

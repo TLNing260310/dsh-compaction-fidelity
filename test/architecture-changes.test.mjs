@@ -140,3 +140,28 @@ test("git repository cache is bounded", () => {
   }
   assert.ok(gitRepoCacheSize() <= 128, `cache=${gitRepoCacheSize()}`);
 });
+
+
+test("a filtered baseline scan never reads an excluded file", () => {
+  const filteredRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-baseline-filter-"));
+  try {
+    mkdirSync(join(filteredRoot, "app"), { recursive: true });
+    writeFileSync(join(filteredRoot, "app", "visible.ts"), "export const visible = 1;\n", "utf8");
+    writeFileSync(join(filteredRoot, "app", "hidden.ts"), "export const hidden = 1;\n", "utf8");
+    const reads = [];
+    const filteredBaseline = computeArchitectureBaseline(filteredRoot, "app", {
+      indexDir: options.indexDir,
+      docName: options.docName,
+      filterFile: (workspaceFile) => !workspaceFile.endsWith("hidden.ts"),
+      readFile: (sourceFile, encoding) => {
+        reads.push(String(sourceFile).slice(filteredRoot.length + 1).replace(/\\/g, "/"));
+        return readFileSync(sourceFile, encoding);
+      },
+    });
+    assert.ok(filteredBaseline.files["app/visible.ts"] !== undefined);
+    assert.equal(filteredBaseline.files["app/hidden.ts"], undefined);
+    assert.deepEqual(reads, ["app/visible.ts"], "an excluded file must not be read at all");
+  } finally {
+    rmSync(filteredRoot, { recursive: true, force: true });
+  }
+});

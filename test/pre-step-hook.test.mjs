@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { appendArchitectureUpdate, renderArchitectureDoc } from '../src/architecture-doc.mjs';
+import { MAX_ARCHITECTURE_DOC_BYTES, appendArchitectureUpdate, renderArchitectureDoc } from '../src/architecture-doc.mjs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,9 +48,10 @@ test('pre-step guards cancellation and isolates helper failures', () => {
   const source = readFileSync(sourcePath, 'utf8');
   const nextIndex = source.indexOf('const decision = await next();');
   assert.ok(nextIndex >= 0, 'pre-step decision await not found');
-  const guardIndex = source.indexOf('if (preStepStopped(signal, decision)) return decision;', nextIndex);
+  const guardIndex = source.indexOf('if (preStepStopped(signal, decision)) {', nextIndex);
   assert.ok(guardIndex > nextIndex, 'the cancellation guard must follow next()');
   assert.ok(guardIndex - nextIndex < 400, 'the cancellation guard must not sit behind the architecture branch');
+  assert.ok(source.slice(guardIndex, guardIndex + 120).includes('cancelQueuedIndex(stepCwd);'), 'a stopped step must drop the queued index build');
 
   const createIndex = source.indexOf('const created = createArchitectureDocument(askedCwd, scope);');
   assert.ok(createIndex > 0, 'document creation call not found');
@@ -164,6 +165,10 @@ test('architecture refresh uses one fresh snapshot for the document and baseline
     assert.ok(doc.includes('src/index.ts'));
     const baseline = JSON.parse(readFileSync(join(root, '.dsh', 'compaction-fidelity', 'architecture-baseline.json'), 'utf8'));
     assert.ok(baseline.scopes['.'].files['src/index.ts'] !== undefined);
+    writeFileSync(join(root, 'src', 'late.ts'), 'export const late = true;\n', 'utf8');
+    const { detectSemanticChanges } = await import('../src/architecture-changes.mjs');
+    const later = detectSemanticChanges(root, '.', { indexDir: '.dsh/compaction-fidelity', docName: 'ARCHITECTURE.md' });
+    assert.ok(later.changedFiles.includes('src/late.ts'), 'the baseline must be the refresh-time snapshot');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -337,6 +342,90 @@ test('a granted creation prompt is re-checked before the write', { skip: hasDshP
     const second = await handler({ agent, signal: { aborted: false } }, async () => decisionWith('创建'));
     assert.equal(existsSync(join(root, 'app', 'ARCHITECTURE.md')), false, 'consent given before the rule change must not create a refused document');
     assert.ok(JSON.stringify(second).includes('无法创建'), 'the refusal must be reported instead of creating');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('a cancelled step schedules no index build', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-cancelled-queue-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'index.ts'), 'export const value = 1;\n', 'utf8');
+    const ctx = createContext(apply, { autoIndex: true });
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'cancelled-queue-session');
+    await handler({ agent, signal: { aborted: true } }, async () => decisionWith('hello'));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'index.json')), false, 'a cancelled step must not build an index');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rejected step drops the queued index build', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-rejected-queue-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'index.ts'), 'export const value = 1;\n', 'utf8');
+    const ctx = createContext(apply, { autoIndex: true });
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'rejected-queue-session');
+    await handler({ agent, signal: { aborted: false } }, async () => ({ kind: 'reject' }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'index.json')), false, 'a rejected step must not build an index');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a queued index re-reads the registry policy before scanning', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-queue-policy-'));
+  try {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    writeFileSync(join(root, 'app', 'hidden.ts'), 'export const hidden = 1;\n', 'utf8');
+    const ctx = createContext(apply, { autoIndex: true });
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'queue-policy-session');
+    const running = handler({ agent, signal: { aborted: false } }, async () => decisionWith('hello'));
+    const indexDir = join(root, '.dsh', 'compaction-fidelity');
+    mkdirSync(indexDir, { recursive: true });
+    writeFileSync(join(indexDir, 'architecture-scopes.json'), JSON.stringify({
+      version: 2,
+      scopes: { app: { doc: 'ARCHITECTURE.md', include: [], exclude: ['**'] } },
+    }), 'utf8');
+    await running;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const indexFile = join(indexDir, 'index.json');
+    assert.equal(existsSync(indexFile), true, 'the queued index should still build under the current policy');
+    const index = JSON.parse(readFileSync(indexFile, 'utf8'));
+    assert.ok(index.files.every((entry) => !entry.p.startsWith('app/')), 'a stale enqueue-time policy must not be reused');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a too-large document is refused before any refresh mutation', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-too-large-refresh-'));
+  try {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    writeFileSync(join(root, 'app', 'index.ts'), 'export const app = 1;\n', 'utf8');
+    const docPath = join(root, 'app', 'ARCHITECTURE.md');
+    const oversized = 'x'.repeat(MAX_ARCHITECTURE_DOC_BYTES + 1);
+    writeFileSync(docPath, oversized, 'utf8');
+    const ctx = createContext(apply);
+    const command = ctx.definitions.get('compaction-fidelity');
+    const agent = agentFor(root, 'too-large-refresh-session');
+    const result = await command.handler({ rawInput: 'architecture refresh app', agent });
+    assert.equal(result.kind, 'error');
+    assert.ok(result.text.includes('超过大小限制'), result.text);
+    assert.equal(readFileSync(docPath, 'utf8').length, oversized.length, 'an oversized document must not be replaced');
+    assert.equal(existsSync(join(root, '.dsh', 'compaction-fidelity', 'architecture-baseline.json')), false, 'a refused refresh must not write a baseline');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

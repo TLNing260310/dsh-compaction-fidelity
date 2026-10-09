@@ -152,7 +152,7 @@ test('a registry write failure is reported and leaves the registry unchanged', s
 test('a refresh reports partial completion when the baseline write fails', skipWithoutPeers, async () => {
   const { root, tool, agent } = await setupEntryTest();
   try {
-    fixtureWorkspace(root);
+    fixtureWorkspace(root, { doc: false });
     const created = await tool.execute({ action: 'create', scope: 'app' }, { agent });
     assert.ok(created.text.startsWith('created:'), created.text);
     const baselinePath = join(root, '.dsh', 'compaction-fidelity', 'architecture-baseline.json');

@@ -32,7 +32,7 @@ import { PLUGIN_NAME, PRODUCER_SOURCE } from './message-source.mjs';
 import { appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readManagedArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, verifyArchitectureDoc } from './architecture-doc.mjs';
 
 import { mutateArchitectureDocument } from './architecture-io.mjs';
-import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
+import { architectureBaselineFromIndex, computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
 import { classifyRegistryWriteError, createGlobalWorkspaceFileFilter, createWorkspaceFileFilter, isValidScopePattern, managedDocOutcomeFor, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
@@ -251,12 +251,26 @@ export function apply(ctx, config = {}) {
       return { ok: false, reason: recheck.reason, created: false, target: null, baselineWritten: false, baselineReason: null };
     }
     const docName = recheck.target.docName;
+    let createdIndex = null;
     const mutation = mutateArchitectureDocument(target.absolute, (current) => {
       if (current !== null) return null;
-      const index = buildArchitectureIndex(cwd, scope);
-      return renderArchitectureDoc({ scope, docName, index });
+      createdIndex = buildArchitectureIndex(cwd, scope);
+      return renderArchitectureDoc({ scope, docName, index: createdIndex });
     });
-    const baseline = mutation.changed ? updateArchitectureBaseline(cwd, scope) : { written: false, reason: null };
+    let baseline = { written: false, reason: null };
+    if (mutation.changed && createdIndex !== null) {
+      architectureCheckCache.clear();
+      // The baseline must describe the same index that rendered the document.
+      try {
+        const filterFile = architectureManagedFilter(cwd, scope) ?? undefined;
+        writeArchitectureBaseline(cwd, scope, architectureBaselineFromIndex(cwd, scope, createdIndex, { docName, filterFile }), cfg.indexDir);
+        baseline = { written: true, reason: null };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.logger?.warn?.("compaction-fidelity architecture baseline failed [" + scope + "]: " + message);
+        baseline = { written: false, reason: "baseline-write-failed" };
+      }
+    }
     return { ok: true, reason: null, created: mutation.changed, target, baselineWritten: baseline.written, baselineReason: baseline.reason };
   };
   const buildArchitectureIndex = (cwd, scope, { refresh = false } = {}) => {
@@ -303,12 +317,20 @@ export function apply(ctx, config = {}) {
     if (access.ok !== true) {
       return { ok: false, reason: access.reason, target: null, mutationApplied: false, refreshed: false, baselineWritten: false, baselineReason: null };
     }
+    // Apply the same file-layer gate every reader uses before mutating: an
+    // oversized, unreadable, symlinked, or unsafe document must not be
+    // replaced by a freshly rendered one.
+    const existing = readManagedDoc(cwd, scope);
+    if (existing.ok !== true && existing.reason !== "missing") {
+      return { ok: false, reason: existing.reason, target: null, mutationApplied: false, refreshed: false, baselineWritten: false, baselineReason: null };
+    }
     let target;
     try {
       target = resolveArchitectureDoc(cwd, access.target.scope, access.target.docName);
     } catch (error) {
       return { ok: false, reason: architecturePathReason(error), target: null, mutationApplied: false, refreshed: false, baselineWritten: false, baselineReason: null };
     }
+    const filterFile = architectureManagedFilter(cwd, scope) ?? undefined;
     const index = buildArchitectureIndex(cwd, scope, { refresh: true });
     // Re-check right before the mutation: writing with a target resolved under
     // an older registry would resurrect a document the current rules deny.
@@ -330,7 +352,17 @@ export function apply(ctx, config = {}) {
     let baseline = { written: false, reason: null };
     if (mutation.changed) {
       architectureCheckCache.clear();
-      baseline = updateArchitectureBaseline(cwd, scope);
+      // The document and the baseline must describe the same scan: derive the
+      // baseline from the index that rendered the document instead of scanning
+      // the workspace a second time.
+      try {
+        writeArchitectureBaseline(cwd, scope, architectureBaselineFromIndex(cwd, scope, index, { docName, filterFile }), cfg.indexDir);
+        baseline = { written: true, reason: null };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.logger?.warn?.("compaction-fidelity architecture baseline failed [" + scope + "]: " + message);
+        baseline = { written: false, reason: "baseline-write-failed" };
+      }
     }
     return {
       ok: true,
@@ -408,8 +440,18 @@ export function apply(ctx, config = {}) {
     return next;
   };
 
-  const queueIndex = (cwd, { force = false } = {}) => {
+  const cancelQueuedIndex = (cwd) => {
+    const timer = queuedIndexTimers.get(cwd);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    queuedIndexTimers.delete(cwd);
+    queuedIndexes.delete(cwd);
+  };
+  const queueIndex = (cwd, { force = false, signal } = {}) => {
     if (lifecycleDisposed) return;
+    // A cancelled step must not schedule background work; the queued task
+    // checks the signal again before it scans.
+    if (signal?.aborted) return;
     const master = getGlobalState();
     if (!cfg.autoIndex || master?.enabled === false || isMasterDisabled() || cwd === undefined || cwd === null || queuedIndexes.has(cwd)) return;
     const retrieval = retrievalContext(cwd);
@@ -425,8 +467,13 @@ export function apply(ctx, config = {}) {
     const timer = setTimeout(() => {
       queuedIndexTimers.delete(cwd);
       try {
-        if (lifecycleDisposed || !cfg.autoIndex || getGlobalState()?.enabled === false || isMasterDisabled()) return;
-        buildIndex(cwd, retrieval.options);
+        if (lifecycleDisposed || signal?.aborted || !cfg.autoIndex || getGlobalState()?.enabled === false || isMasterDisabled()) return;
+        // Re-authorize at execution time: the registry may have changed since
+        // this task was queued, so neither the enqueue-time policy nor its
+        // filter options may be reused.
+        const current = retrievalContext(cwd);
+        if (current.blocked) return;
+        buildIndex(cwd, current.options);
         ctx.logger?.info?.(`dsh-compaction-fidelity: Compaction-Fidelity index built for ${cwd}`);
       } catch (error) {
         ctx.logger?.warn?.(`dsh-compaction-fidelity: Compaction-Fidelity index build failed for ${cwd}: ${error instanceof Error ? error.message : String(error)}`);
@@ -437,7 +484,6 @@ export function apply(ctx, config = {}) {
     timer.unref?.();
     queuedIndexTimers.set(cwd, timer);
   };
-
   const briefTool = defineTool({
     name: 'compaction-fidelity-brief',
     description: 'Return the persistent Compaction-Fidelity project brief for the current workspace: module map, architecture-level files, commands, and database structure anchors. Use it when you need a fast, exact overview of a large project without reading the whole repository.',
@@ -794,6 +840,7 @@ export function apply(ctx, config = {}) {
             const failure = (result) => ({ kind: 'error', text: architectureFailureText(result, 'zh') });
             if (action === 'check') {
               const doc = readManagedDoc(cwd, scope);
+              if (doc.ok !== true && doc.reason === 'missing') return { kind: 'success', text: '不存在：' + doc.target.relative };
               if (doc.ok !== true) return failure(doc);
               const stat = statSync(doc.target.absolute);
               const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
@@ -965,12 +1012,16 @@ export function apply(ctx, config = {}) {
     });
 
     ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
-      queueIndex(workspaceOf(agent));
+      const stepCwd = workspaceOf(agent);
+      queueIndex(stepCwd, { signal });
       const decision = await next();
       // A cancelled or rejected step must not produce any further side effect:
       // the architecture branch below can create documents, register scopes, and
-      // write reminder state.
-      if (preStepStopped(signal, decision)) return decision;
+      // write reminder state, and a queued index build must be dropped.
+      if (preStepStopped(signal, decision)) {
+        cancelQueuedIndex(stepCwd);
+        return decision;
+      }
       if (cfg.architectureDoc && getGlobalState()?.enabled !== false && !isMasterDisabled()) {
         // Helpers below are best effort: a failure must leave the host decision
         // untouched instead of breaking the agent step.
@@ -1109,7 +1160,7 @@ export function apply(ctx, config = {}) {
       try {
         const index = loadIndex(cwd, { indexDir: cfg.indexDir, expectedFingerprint: retrieval.policy.fingerprint });
         if (index === null) {
-          queueIndex(cwd);
+          queueIndex(cwd, { signal });
           return decision;
         }
         const files = [...pending].slice(0, 6);

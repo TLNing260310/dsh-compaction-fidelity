@@ -236,11 +236,20 @@ export function architectureBaselineFromIndex(cwd, scope, index, options = {}) {
 export function computeArchitectureBaseline(cwd, scope, options = {}) {
   const normalizedScope = normalizeRel(scope) || ".";
   const scopeRoot = normalizedScope === "." ? cwd : join(cwd, normalizedScope);
+  // The scan must honor the read policy before it reads a file: buildIndex
+  // receives scope-relative paths, so wrap the workspace-relative filter the
+  // caller passed in. Without this the projected baseline excluded the file
+  // but the scan had already read it into memory.
+  const filterFile = typeof options.filterFile === "function"
+    ? (relativeFile) => options.filterFile(normalizedScope === "." ? relativeFile : normalizedScope + "/" + relativeFile)
+    : undefined;
   const index = buildIndex(scopeRoot, {
     indexDir: options.indexDir ?? ".dsh/compaction-fidelity",
     maxFiles: options.maxFiles ?? 20000,
     maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
     write: false,
+    ...(filterFile === undefined ? {} : { filterFile }),
+    ...(typeof options.readFile === "function" ? { readFile: options.readFile } : {}),
   });
   return architectureBaselineFromIndex(cwd, normalizedScope, index, options);
 }
@@ -293,6 +302,7 @@ function walkSemanticFiles(root, scope, maxFiles, filter, options = {}) {
 
 function computeCurrentHashes(cwd, scope, baseline, options) {
   const maxHashFiles = Number.isInteger(options.maxHashFiles) && options.maxHashFiles > 0 ? options.maxHashFiles : 3000;
+  const readFile = typeof options.readFile === "function" ? options.readFile : readFileSync;
   const maxHashBytes = Number.isInteger(options.maxHashBytes) && options.maxHashBytes > 0 ? options.maxHashBytes : 32 * 1024 * 1024;
   const walk = walkSemanticFiles(cwd, scope, options.maxFiles ?? 20000, options.filterFile, { maxFileBytes: options.maxFileBytes ?? 1024 * 1024 });
   const rank = (entry) => {
@@ -316,7 +326,7 @@ function computeCurrentHashes(cwd, scope, baseline, options) {
       continue;
     }
     try {
-      current.set(entry.file, { hash: architectureHash(readFileSync(entry.absolute, "utf8")), size: entry.size });
+      current.set(entry.file, { hash: architectureHash(readFile(entry.absolute, "utf8")), size: entry.size });
       hashedBytes += entry.size;
     } catch {
       truncated = true;
