@@ -2,6 +2,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { isSafeRelativePath, sha256, toPosix } from "./util.mjs";
+import { managedDocOutcomeFor } from "./architecture-registry.mjs";
 
 export const DEFAULT_ARCHITECTURE_DOC = "ARCHITECTURE.md";
 export const MAX_ARCHITECTURE_DOC_BYTES = 1048576;
@@ -115,6 +116,78 @@ export function readArchitectureDoc(root, relativeDir = ".", docName = DEFAULT_A
   // unreadable instead of falling back to raw bytes.
   if (bytes > MAX_ARCHITECTURE_DOC_BYTES) return { ...target, text: "", bytes, truncated: true };
   return { ...target, text: readFileSync(target.absolute, "utf8"), bytes, truncated: false };
+}
+
+function classifyArchitectureReadError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/symlink/i.test(message)) return "symlink";
+  if (/not a safe|not safe|unsafe/i.test(message)) return "unsafe-path";
+  return "unreadable";
+}
+
+function filesystemRefusal(reason, pointer) {
+  return { ok: false, reason, target: { ...pointer }, doc: null };
+}
+
+/**
+ * Read one managed architecture document behind the fail-closed policy gate.
+ *
+ * Outcome-layer refusals return `target: null` and never touch the filesystem:
+ * no path resolution, no existence check, no read, no stat. Filesystem-layer
+ * failures return a source pointer that is *not* an operable target, so a
+ * caller can report where it looked but cannot mutate anything from it.
+ *
+ * The optional `deps` seam exists so tests can count reads and prove that a
+ * refusal performs none; production callers pass `cwd`, the fallback document
+ * name, and a `loadRegistry` closure for their workspace.
+ */
+export function readManagedArchitectureDoc(scope, deps = {}) {
+  const outcome = managedDocOutcomeFor(scope, {
+    loadRegistry: deps.loadRegistry,
+    registry: deps.registry,
+    fallbackDoc: deps.fallbackDoc,
+  });
+  if (outcome.ok !== true) return { ok: false, reason: outcome.reason, target: null, doc: null };
+  const pointer = {
+    scope: outcome.target.scope,
+    docName: outcome.target.docName,
+    relative: outcome.target.relative,
+  };
+  const cwd = deps.cwd;
+  const resolveDoc = typeof deps.resolveArchitectureDoc === "function" ? deps.resolveArchitectureDoc : resolveArchitectureDoc;
+  const docExists = typeof deps.architectureDocExists === "function" ? deps.architectureDocExists : architectureDocExists;
+  const readDoc = typeof deps.readArchitectureDoc === "function" ? deps.readArchitectureDoc : readArchitectureDoc;
+  let resolved;
+  try {
+    resolved = resolveDoc(cwd, pointer.scope, pointer.docName);
+  } catch (error) {
+    return filesystemRefusal(classifyArchitectureReadError(error), pointer);
+  }
+  let existing;
+  try {
+    existing = docExists(cwd, pointer.scope, pointer.docName);
+  } catch (error) {
+    return filesystemRefusal(classifyArchitectureReadError(error), pointer);
+  }
+  if (existing === null || existing === undefined) return filesystemRefusal("missing", pointer);
+  let doc;
+  try {
+    doc = readDoc(cwd, pointer.scope, pointer.docName);
+  } catch (error) {
+    return filesystemRefusal(classifyArchitectureReadError(error), pointer);
+  }
+  if (doc === null || doc === undefined) return filesystemRefusal("missing", pointer);
+  if (doc.truncated === true) {
+    // readArchitectureDoc reports an oversized document as truncated with the
+    // real byte count, and a failed stat as truncated with bytes 0.
+    return filesystemRefusal(doc.bytes > MAX_ARCHITECTURE_DOC_BYTES ? "too-large" : "unreadable", pointer);
+  }
+  return {
+    ok: true,
+    reason: null,
+    target: { ...pointer, absolute: doc.absolute ?? resolved.absolute },
+    doc,
+  };
 }
 
 function attr(value) {

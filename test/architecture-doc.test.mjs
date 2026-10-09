@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, readArchitectureAttestation, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc, verifyArchitectureDoc } from "../src/architecture-doc.mjs";
+import { MAX_ARCHITECTURE_DOC_BYTES, appendArchitectureUpdate, detectTaskFolders, preserveArchitectureUpdateLog, readArchitectureAttestation, readManagedArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, validateArchitectureDoc, verifyArchitectureDoc } from "../src/architecture-doc.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "compaction-fidelity-architecture-"));
 mkdirSync(join(root, "src", "feature"), { recursive: true });
@@ -128,6 +128,131 @@ test("symlinked scope paths are rejected", (t) => {
   }
   try {
     assert.throws(() => resolveArchitectureDoc(sandbox, "link"));
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+
+test("readManagedArchitectureDoc reads an allowed document with an absolute target", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-read-"));
+  try {
+    writeFileSync(join(dir, "ARCHITECTURE.md"), "# Root\n", "utf8");
+    const result = readManagedArchitectureDoc(".", { cwd: dir, fallbackDoc: "ARCHITECTURE.md", loadRegistry: () => ({ version: 2, status: "valid", scopes: {} }) });
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, null);
+    assert.equal(result.target.relative, "ARCHITECTURE.md");
+    assert.equal(result.target.absolute, join(dir, "ARCHITECTURE.md"));
+    assert.equal(result.doc.text, "# Root\n");
+    assert.equal(result.doc.truncated, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readManagedArchitectureDoc reports missing only after policy allows the scope", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-missing-"));
+  try {
+    const result = readManagedArchitectureDoc("app", { cwd: dir, fallbackDoc: "ARCHITECTURE.md", loadRegistry: () => ({ version: 2, status: "valid", scopes: {} }) });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "missing");
+    assert.deepEqual(result.target, { scope: "app", docName: "ARCHITECTURE.md", relative: "app/ARCHITECTURE.md" });
+    assert.equal(result.doc, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an outcome refusal never touches the filesystem and reads the registry once", () => {
+  let loads = 0;
+  let resolves = 0;
+  let exists = 0;
+  let reads = 0;
+  const result = readManagedArchitectureDoc("app", {
+    fallbackDoc: "ARCHITECTURE.md",
+    loadRegistry: () => { loads += 1; return { version: 2, status: "valid", scopes: { app: { include: [], exclude: ["**"] } } }; },
+    resolveArchitectureDoc: () => { resolves += 1; throw new Error("must not resolve"); },
+    architectureDocExists: () => { exists += 1; throw new Error("must not check"); },
+    readArchitectureDoc: () => { reads += 1; throw new Error("must not read"); },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "denied-scope");
+  assert.equal(result.target, null);
+  assert.equal(result.doc, null);
+  assert.deepEqual({ loads, resolves, exists, reads }, { loads: 1, resolves: 0, exists: 0, reads: 0 });
+});
+
+test("a refusal wins over a missing document", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-refuse-"));
+  try {
+    const result = readManagedArchitectureDoc("app", { cwd: dir, fallbackDoc: "ARCHITECTURE.md", loadRegistry: () => ({ version: 2, status: "valid", scopes: { app: { include: [], exclude: ["**"] } } }) });
+    assert.equal(result.reason, "denied-scope");
+    assert.notEqual(result.reason, "missing");
+    assert.equal(result.target, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readManagedArchitectureDoc reports too-large against MAX_ARCHITECTURE_DOC_BYTES", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-large-"));
+  try {
+    writeFileSync(join(dir, "ARCHITECTURE.md"), "x".repeat(MAX_ARCHITECTURE_DOC_BYTES + 1), "utf8");
+    const result = readManagedArchitectureDoc(".", { cwd: dir, fallbackDoc: "ARCHITECTURE.md", loadRegistry: () => ({ version: 2, status: "valid", scopes: {} }) });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "too-large");
+    assert.equal(result.target.relative, "ARCHITECTURE.md");
+    assert.equal(result.target.absolute, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("filesystem failures keep a source pointer that is not operable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-failure-"));
+  try {
+    writeFileSync(join(dir, "ARCHITECTURE.md"), "# Root\n", "utf8");
+    const unreadable = readManagedArchitectureDoc(".", {
+      cwd: dir,
+      fallbackDoc: "ARCHITECTURE.md",
+      loadRegistry: () => ({ version: 2, status: "valid", scopes: {} }),
+      readArchitectureDoc: () => { throw new Error("EIO: cannot read"); },
+    });
+    assert.equal(unreadable.reason, "unreadable");
+    assert.equal(unreadable.target.absolute, undefined);
+    assert.equal(unreadable.target.relative, "ARCHITECTURE.md");
+
+    const unsafe = readManagedArchitectureDoc(".", {
+      cwd: dir,
+      fallbackDoc: "ARCHITECTURE.md",
+      loadRegistry: () => ({ version: 2, status: "valid", scopes: {} }),
+      resolveArchitectureDoc: () => { throw new Error("architecture doc scope is not a safe workspace-relative path: x"); },
+    });
+    assert.equal(unsafe.reason, "unsafe-path");
+    assert.equal(unsafe.target.relative, "ARCHITECTURE.md");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readManagedArchitectureDoc refuses a symlinked scope target", (t) => {
+  const outside = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-outside-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "compaction-fidelity-managed-link-"));
+  try {
+    symlinkSync(outside, join(sandbox, "link"), "dir");
+  } catch {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
+    t.skip("symlink creation is not permitted on this platform");
+    return;
+  }
+  try {
+    const result = readManagedArchitectureDoc("link", { cwd: sandbox, fallbackDoc: "ARCHITECTURE.md", loadRegistry: () => ({ version: 2, status: "valid", scopes: {} }) });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "symlink");
+    assert.equal(result.target.scope, "link");
+    assert.equal(result.target.absolute, undefined);
   } finally {
     rmSync(outside, { recursive: true, force: true });
     rmSync(sandbox, { recursive: true, force: true });

@@ -251,6 +251,56 @@ export function managedDocTarget(registry, scope, fallbackDoc = "ARCHITECTURE.md
   return resolved.ok === true ? { scope: resolved.scope, docName: resolved.docName, relative: resolved.relative } : null;
 }
 
+function refusalOutcome(reason) {
+  return { ok: false, reason, target: null };
+}
+
+/**
+ * Structured, fail-closed outcome for one managed architecture document.
+ *
+ * This is the single policy gate every reader and writer must pass before it
+ * resolves a path, reads a file, or mutates anything. Outcome-layer refusals
+ * (denied-scope, denied-ancestor, corrupt-registry, invalid-scope) always
+ * return target: null: a refused outcome is not a pointer, and no caller may
+ * build a default-document target from it.
+ *
+ * Filesystem failures (missing, unsafe-path, symlink, too-large, unreadable)
+ * are deliberately not produced here; they belong to the reader
+ * (readManagedArchitectureDoc) and are only meaningful once policy has allowed
+ * the document.
+ */
+export function managedDocOutcomeFor(scope, deps = {}) {
+  if (typeof scope !== "string") return refusalOutcome("invalid-scope");
+  const trimmed = scope.trim();
+  if (trimmed.length === 0 || trimmed.includes("\0")) return refusalOutcome("invalid-scope");
+  const normalizedScope = normalizeScope(trimmed);
+  if (normalizedScope === null) return refusalOutcome("invalid-scope");
+  const fallbackDoc = typeof deps.fallbackDoc === "string" && /^[\w.-]+\.md$/i.test(deps.fallbackDoc)
+    ? deps.fallbackDoc
+    : "ARCHITECTURE.md";
+  let registry;
+  try {
+    registry = typeof deps.loadRegistry === "function" ? deps.loadRegistry() : deps.registry;
+  } catch {
+    // The low-level reader already folds IO failures into corrupt; an injected
+    // reader that throws must fail closed for the same reason.
+    registry = { version: REGISTRY_VERSION, status: "corrupt", scopes: {} };
+  }
+  if (registry === null || registry === undefined) registry = { version: REGISTRY_VERSION, status: "missing", scopes: {} };
+  const resolved = resolveManagedDocTarget(registry, normalizedScope, fallbackDoc);
+  if (resolved.ok !== true) {
+    // Keep the specific refusal found below (denied-scope vs denied-ancestor).
+    // This project does not promise a separate registry-unreadable reason
+    // because the reader already reports IO failures as corrupt.
+    return refusalOutcome(resolved.reason === "registry-unreadable" ? "corrupt-registry" : resolved.reason);
+  }
+  return {
+    ok: true,
+    reason: null,
+    target: { scope: resolved.scope, docName: resolved.docName, relative: resolved.relative },
+  };
+}
+
 function normalizeEntry(entry) {
   const rawInclude = Array.isArray(entry?.include) ? entry.include : [];
   const include = toRuleList(rawInclude);
@@ -336,7 +386,20 @@ export function writeArchitectureRegistry(cwd, indexDir, registry) {
   return payload;
 }
 
-export function mutateArchitectureRegistry(cwd, indexDir, mutator) {
+/**
+ * Map a registry mutation failure onto its public refusal reason. The lock and
+ * CAS helpers report failures by message, so this stays deliberately small and
+ * prefers failing closed (write-failed) over guessing.
+ */
+export function classifyRegistryWriteError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/CAS conflict/i.test(message)) return "registry-cas-conflict";
+  if (/lock timeout/i.test(message)) return "registry-locked";
+  if (/corrupt|blank/i.test(message)) return "corrupt-registry";
+  return "registry-write-failed";
+}
+
+export function mutateArchitectureRegistry(cwd, indexDir, mutator, options = {}) {
   const file = registryPath(cwd, indexDir);
   assertWorkspaceContained(cwd, file);
   let payload = null;
@@ -358,7 +421,7 @@ export function mutateArchitectureRegistry(cwd, indexDir, mutator) {
     if (next === null || next === undefined) return null;
     payload = serializeRegistry(next);
     return JSON.stringify(payload, null, 2);
-  });
+  }, options);
   return {
     changed: result.changed,
     registry: payload ?? readArchitectureRegistry(cwd, indexDir),
@@ -382,7 +445,7 @@ export function rememberArchitectureScope(cwd, indexDir, scope, options = {}) {
   return mutation.registry;
 }
 
-export function updateArchitectureScopeRules(cwd, indexDir, scope, change = {}) {
+export function updateArchitectureScopeRules(cwd, indexDir, scope, change = {}, mutationOptions = {}) {
   const normalized = normalizeScope(scope);
   if (normalized === null) throw new Error(`unsafe architecture scope: ${String(scope)}`);
   const now = new Date().toISOString();
@@ -414,11 +477,11 @@ export function updateArchitectureScopeRules(cwd, indexDir, scope, change = {}) 
       updatedAt: now,
     });
     return registry;
-  });
+  }, mutationOptions);
   return mutation.registry;
 }
 
-export function removeArchitectureScope(cwd, indexDir, scope) {
+export function removeArchitectureScope(cwd, indexDir, scope, mutationOptions = {}) {
   const normalized = normalizeScope(scope);
   if (normalized === null) throw new Error(`unsafe architecture scope: ${String(scope)}`);
   let existed = false;
@@ -426,7 +489,7 @@ export function removeArchitectureScope(cwd, indexDir, scope) {
     existed = Object.prototype.hasOwnProperty.call(registry.scopes, normalized);
     delete registry.scopes[normalized];
     return registry;
-  });
+  }, mutationOptions);
   return { existed, registry: mutation.registry };
 }
 

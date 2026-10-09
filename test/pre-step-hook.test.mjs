@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { appendArchitectureUpdate, renderArchitectureDoc } from '../src/architecture-doc.mjs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { estimateTextTokens } from '../src/util.mjs';
 
@@ -76,7 +76,14 @@ test('pre-step scope adoption never references a block-local target', () => {
   assert.ok(start >= 0 && end > start, 'pre-step scope block not found');
   const region = source.slice(start, end);
   assert.ok(!region.includes('rememberArchitectureScope(agent, target.relativeDir)'));
-  assert.ok(region.includes('if (!detection.ambiguous) rememberArchitectureScope(agent, detection.primary.relativeDir);'));
+  assert.ok(region.includes('const access = architectureDocAccess(askedCwd, target.relativeDir);'), 'the prompt path must check policy first');
+  assert.ok(region.includes('const primaryAccess = architectureDocAccess(askedCwd, detection.primary.relativeDir);'), 'scope adoption must check policy first');
+  assert.ok(region.includes('if (primaryAccess.ok === true) rememberArchitectureScope(agent, detection.primary.relativeDir);'), 'adoption must be conditional on an allowed scope');
+  const createdIndex = source.indexOf('const created = createArchitectureDocument(askedCwd, scope);');
+  const okCheckIndex = source.indexOf('if (created.ok !== true)', createdIndex);
+  const rememberIndex = source.indexOf('rememberArchitectureScope(agent, scope);', okCheckIndex);
+  assert.ok(createdIndex > 0 && okCheckIndex > createdIndex, 'a refused creation must be checked before any notice');
+  assert.ok(rememberIndex > okCheckIndex, 'registration must happen only after the creation is allowed');
 });
 
 test('pre-step hook handles single-candidate consent, ambiguity, and decline', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
@@ -272,6 +279,64 @@ test('engine applies managed exclusions, runtime anchors, and the full pinned bu
     const instructionTokens = estimateTextTokens(budgetPrompt);
     const pinnedTokens = estimateTextTokens(pinned.text);
     assert.ok(instructionTokens + pinnedTokens <= 2048, `instruction=${instructionTokens} pinned=${pinnedTokens}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('pre-step checks policy before prompting, adopting, or creating', () => {
+  const source = readFileSync(sourcePath, 'utf8');
+  const detectionStart = source.indexOf('const detection = detectTaskFolders');
+  const accessIndex = source.indexOf('const access = architectureDocAccess(askedCwd, target.relativeDir);', detectionStart);
+  const adoptIndex = source.indexOf('const primaryAccess = architectureDocAccess', detectionStart);
+  const rememberIndex = source.indexOf('rememberArchitectureScope(agent, detection.primary.relativeDir)', detectionStart);
+  assert.ok(detectionStart > 0 && accessIndex > detectionStart, 'the single-candidate prompt must check policy first');
+  assert.ok(adoptIndex > accessIndex && rememberIndex > adoptIndex, 'adoption must be gated by the policy check');
+});
+
+test('a refused scope never prompts, registers, or creates', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-pre-step-refused-'));
+  try {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    writeFileSync(join(root, 'app', 'index.ts'), 'export const app = 1;\n', 'utf8');
+    const registryPath = join(root, '.dsh', 'compaction-fidelity', 'architecture-scopes.json');
+    mkdirSync(dirname(registryPath), { recursive: true });
+    const registryText = JSON.stringify({ version: 2, scopes: { app: { doc: 'ARCHITECTURE.md', include: [], exclude: ['**'] } } }, null, 2);
+    writeFileSync(registryPath, registryText, 'utf8');
+    const ctx = createContext(apply);
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'refused-session');
+    const first = await handler({ agent, signal: { aborted: false } }, async () => decisionWith('Please work in app'));
+    assert.ok(!JSON.stringify(first).includes('请先向用户确认'), 'a refused scope must not be prompted');
+    assert.equal(existsSync(join(root, 'app', 'ARCHITECTURE.md')), false);
+    assert.equal(readFileSync(registryPath, 'utf8'), registryText);
+    const second = await handler({ agent, signal: { aborted: false } }, async () => decisionWith('创建'));
+    assert.equal(existsSync(join(root, 'app', 'ARCHITECTURE.md')), false, 'a refused scope must not be created later');
+    assert.equal(readFileSync(registryPath, 'utf8'), registryText);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a granted creation prompt is re-checked before the write', { skip: hasDshPeers ? false : 'DSH peer modules are not linked' }, async () => {
+  const { apply } = await import('../src/index.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'compaction-fidelity-pre-step-revoked-'));
+  try {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    writeFileSync(join(root, 'app', 'index.ts'), 'export const app = 1;\n', 'utf8');
+    const ctx = createContext(apply);
+    const handler = ctx.listeners.get('agent/pre-step');
+    const agent = agentFor(root, 'revoked-session');
+    const first = await handler({ agent, signal: { aborted: false } }, async () => decisionWith('Please work in app'));
+    assert.ok(JSON.stringify(first).includes('请先向用户确认'));
+    const registryPath = join(root, '.dsh', 'compaction-fidelity', 'architecture-scopes.json');
+    mkdirSync(dirname(registryPath), { recursive: true });
+    writeFileSync(registryPath, JSON.stringify({ version: 2, scopes: { app: { doc: 'ARCHITECTURE.md', include: [], exclude: ['**'] } } }, null, 2), 'utf8');
+    const second = await handler({ agent, signal: { aborted: false } }, async () => decisionWith('创建'));
+    assert.equal(existsSync(join(root, 'app', 'ARCHITECTURE.md')), false, 'consent given before the rule change must not create a refused document');
+    assert.ok(JSON.stringify(second).includes('无法创建'), 'the refusal must be reported instead of creating');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

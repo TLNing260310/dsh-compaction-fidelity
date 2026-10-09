@@ -87,6 +87,45 @@ rather than assumed, and are now covered by characterisation tests in
 
 - No real-model paired evaluation, Desktop end-to-end upgrade, npm publication, or "leading among peers" claim is made here.
 
+### Changed
+
+- Architecture document access now fails closed: a denied scope (or a denied
+  ancestor scope) no longer falls back to the default document name. Refusals
+  carry a structured reason (`denied-scope`, `denied-ancestor`, `corrupt-registry`, `invalid-scope`) and a `null` target, and are propagated
+  without side effects: no path resolution, read, create, refresh, scope
+  registration, baseline write, or creation prompt.
+- A single reader (`readManagedArchitectureDoc`) is now the gate for every architecture read path:
+  outcome-layer refusals return no target at all, while filesystem failures
+  (`missing`, `unsafe-path`, `symlink`, `too-large`, `unreadable`) keep a source pointer that cannot be
+  used for mutation. A refusal always wins over a missing document.
+- Rule-management entries (`manage`, `include`, `exclude`, `unmanage`) are processed before
+  document resolution. A rule update re-reads the registry instead of reusing
+  the in-memory result, and only an allowed scope that already has a document
+  is refreshed or registered.
+- Registry write failures now have distinct reasons (`registry-write-failed`,
+  `registry-cas-conflict`, `registry-locked`, `corrupt-registry`) and never leave a half-written
+  registry; a corrupt or blank registry is still never rewritten.
+- `architectureAsked` keeps its existing in-memory semantics; the permission check
+  is moved before prompt suppression, scope adoption, and creation, so consent
+  given before a rule change cannot create a refused document.
+- A successful document mutation whose baseline write fails is reported as a
+  partial completion (`mutationApplied: true`, `baselineWritten: false`) with a diagnostic
+  log entry instead of being reported as a full success or failure.
+
+### Known limitations
+
+- Registry reads and writes are not covered by a cross-process lock; concurrent
+  writers in separate processes are undefined.
+- Registry, document, and baseline are not covered by a joint transaction; this
+  round reuses the existing lock/atomic-replace/CAS helpers and does not promise
+  cross-file atomicity.
+- There is no `registry-changed` secondary validation between the policy decision
+  and the read, so a concurrent rule change inside that window is not detected.
+- `architecturePrompted` is not introduced; prompt state remains in-memory.
+- Change detection is not gated on Git tracking; this round does not claim that
+  untracked files escape hash detection.
+
+
 ## 0.3.1
 
 Hardening release on top of the published 0.3.0 tag. The `v0.3.0` tag remains unchanged.

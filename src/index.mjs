@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -29,13 +29,13 @@ import {
 } from './state.mjs';
 import { clampText, isSafeRelativePath, normalizeRelPath, toPosix } from './util.mjs';
 import { PLUGIN_NAME, PRODUCER_SOURCE } from './message-source.mjs';
-import { appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, verifyArchitectureDoc } from './architecture-doc.mjs';
+import { appendArchitectureUpdate, detectTaskFolders, lastUserText, preserveArchitectureUpdateLog, readManagedArchitectureDoc, renderArchitectureDoc, resolveArchitectureDoc, verifyArchitectureDoc } from './architecture-doc.mjs';
 
-import { atomicWriteArchitectureFile, mutateArchitectureDocument } from './architecture-io.mjs';
-import { architectureBaselineFromIndex, computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
+import { mutateArchitectureDocument } from './architecture-io.mjs';
+import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from './architecture-changes.mjs';
 export const name = PLUGIN_NAME;
 import { architectureReminderKey, mutateReminderState, pruneReminderState, recordReminder, reminderDecision } from './reminder-state.mjs';
-import { createGlobalWorkspaceFileFilter, createWorkspaceFileFilter, isValidScopePattern, managedDocTarget, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
+import { classifyRegistryWriteError, createGlobalWorkspaceFileFilter, createWorkspaceFileFilter, isValidScopePattern, managedDocOutcomeFor, managedScopeRules, readArchitectureRegistry, registryFingerprint, rememberArchitectureScope as rememberScopeInRegistry, removeArchitectureScope, retrievalPolicyFor, updateArchitectureScopeRules } from './architecture-registry.mjs';
 import { preStepStopped, readArchitectureConsent } from './step-policy.mjs';
 import { importFidelityCalibration, readFidelityCalibration, summarizeFidelityCalibration } from './fidelity-calibration.mjs';
 export const inject = ['commands', 'tools'];
@@ -181,26 +181,83 @@ export function apply(ctx, config = {}) {
     }
     return change;
   };
-  const managedDocNameFor = (cwd, scope) => {
-    try {
-      const target = managedDocTarget(readArchitectureRegistry(cwd, cfg.indexDir), scope, cfg.architectureDocName);
-      return target?.docName ?? cfg.architectureDocName;
-    } catch {
-      return cfg.architectureDocName;
+  const managedDocDeps = (cwd) => ({
+    cwd,
+    indexDir: cfg.indexDir,
+    fallbackDoc: cfg.architectureDocName,
+    loadRegistry: () => readArchitectureRegistry(cwd, cfg.indexDir),
+  });
+  // Fail-closed policy gate: outcome-layer refusals carry target: null, so no
+  // caller below can resolve a path or fall back to the default document name.
+  const architectureDocAccess = (cwd, scope) => managedDocOutcomeFor(scope, managedDocDeps(cwd));
+  const readManagedDoc = (cwd, scope) => readManagedArchitectureDoc(scope, managedDocDeps(cwd));
+  const architecturePathReason = (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/symlink/i.test(message)) return "symlink";
+    if (/not a safe|not safe|unsafe/i.test(message)) return "unsafe-path";
+    return "unreadable";
+  };
+  const ARCHITECTURE_REFUSAL_TEXT = {
+    "denied-scope": { en: "denied: this scope is excluded from managed architecture retrieval", zh: "该 scope 已被排除，无法访问架构文档" },
+    "denied-ancestor": { en: "denied: an ancestor scope is excluded from managed architecture retrieval", zh: "该 scope 的上级目录已被排除，无法访问架构文档" },
+    "corrupt-registry": { en: "refused: the architecture rule registry is corrupt; repair or restore it", zh: "架构规则文件损坏，无法判断权限；请检查或恢复 registry" },
+    "invalid-scope": { en: "refused: scope is not a safe workspace-relative path", zh: "scope 格式无效" },
+    "unsafe-path": { en: "refused: path safety check failed", zh: "路径安全检查未通过" },
+    "symlink": { en: "refused: path safety check failed", zh: "路径安全检查未通过" },
+    "too-large": { en: "refused: document exceeds the size limit", zh: "文档超过大小限制" },
+    "unreadable": { en: "refused: document could not be read", zh: "文档无法读取" },
+  };
+  const architectureRefusalText = (reason, lang) => {
+    const entry = ARCHITECTURE_REFUSAL_TEXT[reason];
+    if (entry === undefined) return lang === "zh" ? "架构文档访问失败" : "architecture document access failed";
+    return entry[lang];
+  };
+  const architectureFailureText = (failure, lang) => {
+    const reason = failure?.reason ?? "unreadable";
+    if (reason === "missing") {
+      return (lang === "zh" ? "不存在：" : "missing: ") + String(failure?.target?.relative ?? "?");
     }
+    return architectureRefusalText(reason, lang) + (failure?.target?.relative ? " (" + failure.target.relative + ")" : "");
+  };
+  const registryWriteReasonText = (reason, lang) => {
+    const text = {
+      "registry-write-failed": { en: "registry write failed", zh: "架构规则写入失败" },
+      "registry-cas-conflict": { en: "registry changed concurrently; retry", zh: "架构规则已被其他操作修改，请重试" },
+      "registry-locked": { en: "registry is locked by another operation; retry later", zh: "架构规则正在被其他操作占用，请稍后重试" },
+      "corrupt-registry": { en: "registry is corrupt; repair or restore it", zh: "架构规则文件损坏；请检查或恢复 registry" },
+    };
+    return (text[reason] ?? text["registry-write-failed"])[lang];
   };
 
   const createArchitectureDocument = (cwd, scope) => {
-    const target = resolveArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
+    // Policy first: a refused scope must not check the parent directory, build
+    // an index, write a document, write a baseline, or register anything.
+    const access = architectureDocAccess(cwd, scope);
+    if (access.ok !== true) {
+      return { ok: false, reason: access.reason, created: false, target: null, baselineWritten: false, baselineReason: null };
+    }
+    let target;
+    try {
+      target = resolveArchitectureDoc(cwd, access.target.scope, access.target.docName);
+    } catch (error) {
+      return { ok: false, reason: architecturePathReason(error), created: false, target: null, baselineWritten: false, baselineReason: null };
+    }
     const parentDir = join(target.absolute, "..");
     if (!existsSync(parentDir) || !statSync(parentDir).isDirectory()) throw new Error("scope folder does not exist: " + scope);
+    // Re-check immediately before the mutation: consent may have been given
+    // before the registry changed.
+    const recheck = architectureDocAccess(cwd, scope);
+    if (recheck.ok !== true) {
+      return { ok: false, reason: recheck.reason, created: false, target: null, baselineWritten: false, baselineReason: null };
+    }
+    const docName = recheck.target.docName;
     const mutation = mutateArchitectureDocument(target.absolute, (current) => {
       if (current !== null) return null;
       const index = buildArchitectureIndex(cwd, scope);
-      return renderArchitectureDoc({ scope, docName: managedDocNameFor(cwd, scope), index });
+      return renderArchitectureDoc({ scope, docName, index });
     });
-    if (mutation.changed) updateArchitectureBaseline(cwd, scope);
-    return { created: mutation.changed, target };
+    const baseline = mutation.changed ? updateArchitectureBaseline(cwd, scope) : { written: false, reason: null };
+    return { ok: true, reason: null, created: mutation.changed, target, baselineWritten: baseline.written, baselineReason: baseline.reason };
   };
   const buildArchitectureIndex = (cwd, scope, { refresh = false } = {}) => {
     const normalizedScope = toPosix(String(scope ?? ".")).replace(/\/+$/, "");
@@ -242,47 +299,69 @@ export function apply(ctx, config = {}) {
   const listArchitectureScopes = (cwd) => Object.keys(getArchitectureRegistry(cwd).scopes);
 
   const refreshArchitectureDocument = (cwd, scope) => {
-    const target = resolveArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-    const filterFile = architectureManagedFilter(cwd, scope) ?? undefined;
+    const access = architectureDocAccess(cwd, scope);
+    if (access.ok !== true) {
+      return { ok: false, reason: access.reason, target: null, mutationApplied: false, refreshed: false, baselineWritten: false, baselineReason: null };
+    }
+    let target;
+    try {
+      target = resolveArchitectureDoc(cwd, access.target.scope, access.target.docName);
+    } catch (error) {
+      return { ok: false, reason: architecturePathReason(error), target: null, mutationApplied: false, refreshed: false, baselineWritten: false, baselineReason: null };
+    }
     const index = buildArchitectureIndex(cwd, scope, { refresh: true });
+    // Re-check right before the mutation: writing with a target resolved under
+    // an older registry would resurrect a document the current rules deny.
+    const recheck = architectureDocAccess(cwd, scope);
+    if (recheck.ok !== true) {
+      return { ok: false, reason: recheck.reason, target: null, mutationApplied: false, refreshed: false, baselineWritten: false, baselineReason: null };
+    }
+    const docName = recheck.target.docName;
     let existed = false;
     const mutation = mutateArchitectureDocument(target.absolute, (current) => {
       existed = current !== null;
       const structure = renderArchitectureDoc({
         scope,
-        docName: managedDocNameFor(cwd, scope),
+        docName,
         index,
       });
       return current === null ? structure : preserveArchitectureUpdateLog(current, structure);
     });
+    let baseline = { written: false, reason: null };
     if (mutation.changed) {
       architectureCheckCache.clear();
-      try {
-        writeArchitectureBaseline(
-          cwd,
-          scope,
-          architectureBaselineFromIndex(cwd, scope, index, { docName: managedDocNameFor(cwd, scope), filterFile }),
-          cfg.indexDir,
-        );
-      } catch (error) {
-        ctx.logger?.warn?.("compaction-fidelity architecture baseline failed: " + (error instanceof Error ? error.message : String(error)));
-      }
+      baseline = updateArchitectureBaseline(cwd, scope);
     }
-    return { target, refreshed: mutation.changed && existed };
+    return {
+      ok: true,
+      reason: null,
+      target,
+      mutationApplied: mutation.changed,
+      refreshed: mutation.changed && existed,
+      baselineWritten: baseline.written,
+      baselineReason: baseline.reason,
+    };
   };
   const updateArchitectureBaseline = (cwd, scope) => {
+    // The baseline must not resurrect a denied scope through the default
+    // document name: check the policy before computing or writing anything.
+    const access = architectureDocAccess(cwd, scope);
+    if (access.ok !== true) return { written: false, reason: access.reason };
     try {
-    architectureCheckCache.clear();
+      architectureCheckCache.clear();
       const baseline = computeArchitectureBaseline(cwd, scope, {
         indexDir: cfg.indexDir,
         maxFiles: cfg.maxFiles,
         maxFileBytes: cfg.maxFileBytes,
-        docName: managedDocNameFor(cwd, scope),
+        docName: access.target.docName,
         filterFile: architectureManagedFilter(cwd, scope) ?? undefined,
       });
       writeArchitectureBaseline(cwd, scope, baseline, cfg.indexDir);
+      return { written: true, reason: null };
     } catch (error) {
-      ctx.logger?.warn?.("compaction-fidelity architecture baseline failed: " + (error instanceof Error ? error.message : String(error)));
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.logger?.warn?.("compaction-fidelity architecture baseline failed [" + scope + "]: " + message);
+      return { written: false, reason: "baseline-write-failed" };
     }
   };
   let lifecycleDisposed = false;
@@ -451,81 +530,101 @@ export function apply(ctx, config = {}) {
       const action = String(args.action ?? "check").trim().toLowerCase();
       const scope = typeof args.scope === "string" && args.scope.trim().length > 0 ? args.scope.trim() : ".";
       try {
-        const target = resolveArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-        if (action === "check") {
-          if (!existsSync(target.absolute)) return { text: "missing: " + target.relative };
-          const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-          const stat = statSync(target.absolute);
-          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(cwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
-          const verification = verifyArchitectureDoc(doc === null ? "" : doc.text);
-          const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-          return { text: "exists: " + target.relative + "; aligned=" + aligned + "; score=" + change.score + "; method=" + change.method + "; attestation=" + (verification.attestation === null ? "missing" : verification.attestation.revision) + "; consistent=" + verification.ok };
-        }
-        const patterns = String(args.pattern ?? "").split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
+        const access = architectureDocAccess(cwd, scope);
         if (action === "manage") {
+          if (access.reason === "invalid-scope") return { text: "invalid scope: " + scope };
+          if (access.reason === "corrupt-registry") return { text: "refused: the architecture rule registry is corrupt; repair or restore it" };
           const rules = architectureScopeRules(cwd, scope);
           return { text: rules === null ? "scope not managed: " + scope : "scope=" + scope + "; include=" + JSON.stringify(rules.include ?? []) + "; exclude=" + JSON.stringify(rules.exclude ?? []) };
         }
         if (action === "include" || action === "exclude" || action === "unmanage") {
+          if (access.reason === "invalid-scope") return { text: "invalid scope: " + scope };
+          const patterns = String(args.pattern ?? "").split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
           if ((action === "include" || action === "exclude") && patterns.some((pattern) => !isValidScopePattern(pattern))) return { text: "invalid scope pattern" };
           if (action !== "unmanage" && patterns.length === 0) return { text: "action=" + action + " requires pattern." };
-          let rules = null;
-          if (action === "unmanage" && patterns.length === 0) {
-            removeArchitectureScope(cwd, cfg.indexDir, scope);
-          } else {
-            updateArchitectureScopeRules(cwd, cfg.indexDir, scope, { include: action === "include" ? patterns : [], exclude: action === "exclude" ? patterns : [], removeInclude: action === "unmanage" ? patterns : [], removeExclude: action === "unmanage" ? patterns : [] });
-            rememberArchitectureScope(exec.agent, scope);
-            rules = architectureScopeRules(cwd, scope);
-            if (existsSync(target.absolute)) refreshArchitectureDocument(cwd, scope);
+          try {
+            if (action === "unmanage" && patterns.length === 0) {
+              removeArchitectureScope(cwd, cfg.indexDir, scope);
+            } else {
+              updateArchitectureScopeRules(cwd, cfg.indexDir, scope, { include: action === "include" ? patterns : [], exclude: action === "exclude" ? patterns : [], removeInclude: action === "unmanage" ? patterns : [], removeExclude: action === "unmanage" ? patterns : [] });
+            }
+          } catch (error) {
+            const reason = classifyRegistryWriteError(error);
+            return { text: "registry not updated: " + registryWriteReasonText(reason, "en") + "." };
           }
-          return { text: action + ": scope=" + scope + "; include=" + JSON.stringify(rules?.include ?? []) + "; exclude=" + JSON.stringify(rules?.exclude ?? []) };
+          // Re-read the registry instead of reusing the in-memory result, then
+          // decide access and only then touch the document.
+          const fresh = architectureDocAccess(cwd, scope);
+          const rules = architectureScopeRules(cwd, scope);
+          const summary = action + ": scope=" + scope + "; include=" + JSON.stringify(rules?.include ?? []) + "; exclude=" + JSON.stringify(rules?.exclude ?? []);
+          if (fresh.ok !== true) return { text: summary + "; document access refused: " + architectureRefusalText(fresh.reason, "en") };
+          rememberArchitectureScope(exec.agent, scope);
+          const doc = readManagedDoc(cwd, scope);
+          if (doc.ok !== true) return { text: summary };
+          const refreshed = refreshArchitectureDocument(cwd, scope);
+          return { text: summary + (refreshed.ok === true ? "; refreshed" : "; refresh failed: " + architectureRefusalText(refreshed.reason, "en")) };
+        }
+        if (access.ok !== true) return { text: architectureRefusalText(access.reason, "en") + " (" + scope + ")" };
+        const failure = (result) => ({ text: architectureFailureText(result, "en") });
+        if (action === "check") {
+          const doc = readManagedDoc(cwd, scope);
+          if (doc.ok !== true) return failure(doc);
+          const stat = statSync(doc.target.absolute);
+          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+          const verification = verifyArchitectureDoc(doc.doc.text);
+          const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
+          return { text: "exists: " + doc.target.relative + "; aligned=" + aligned + "; score=" + change.score + "; method=" + change.method + "; attestation=" + (verification.attestation === null ? "missing" : verification.attestation.revision) + "; consistent=" + verification.ok };
         }
         if (action === "read") {
-          const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-          return doc === null ? { text: "missing: " + target.relative } : { text: clampText(doc.text, 8000) };
+          const doc = readManagedDoc(cwd, scope);
+          return doc.ok !== true ? failure(doc) : { text: clampText(doc.doc.text, 8000) };
         }
         if (action === "create") {
           const created = createArchitectureDocument(cwd, scope);
+          if (created.ok !== true) return { text: architectureRefusalText(created.reason, "en") + " (" + scope + ")" };
           rememberArchitectureScope(exec.agent, scope);
           return { text: created.created ? "created: " + created.target.relative : "already exists: " + created.target.relative };
         }
         if (action === "refresh") {
           const refreshed = refreshArchitectureDocument(cwd, scope);
+          if (refreshed.ok !== true) return { text: architectureRefusalText(refreshed.reason, "en") + " (" + scope + ")" };
           rememberArchitectureScope(exec.agent, scope);
-          return { text: "refreshed: " + refreshed.target.relative };
+          return { text: "refreshed: " + refreshed.target.relative + (refreshed.baselineWritten === false && refreshed.baselineReason !== null ? "; document updated but the baseline record failed; check the log" : "") };
         }
         if (action === "status") {
-          const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-          if (doc === null) return { text: "missing: " + target.relative };
-          const stat = statSync(target.absolute);
-          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(cwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
-          const docVerification = verifyArchitectureDoc(doc.text);
+          const doc = readManagedDoc(cwd, scope);
+          if (doc.ok !== true) return failure(doc);
+          const stat = statSync(doc.target.absolute);
+          const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+          const docVerification = verifyArchitectureDoc(doc.doc.text);
           const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
           return { text: "status: " + (aligned ? "aligned" : "stale") + "; score=" + change.score + "; method=" + change.method + "; forced=" + change.forced + "; threshold=" + cfg.architectureRefreshThreshold + "; updatedAt=" + new Date(stat.mtimeMs).toISOString() + "; attestation=" + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + "; consistent=" + docVerification.ok + "; entries=" + docVerification.entryCount };
         }
         if (action === "verify") {
-          const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-          if (doc === null) return { text: "missing: " + target.relative };
-          const verification = verifyArchitectureDoc(doc.text);
+          const doc = readManagedDoc(cwd, scope);
+          if (doc.ok !== true) return failure(doc);
+          const verification = verifyArchitectureDoc(doc.doc.text);
           return { text: "verify: " + (verification.ok ? "ok" : "failed") + "; entries=" + verification.entryCount + "; structureHash=" + verification.structureHash + "; updateLogHash=" + verification.updateLogHash + "; errors=" + verification.errors.join(" | ") };
         }
         if (action === "update") {
-          const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-          if (doc === null) return { text: "missing: " + target.relative };
+          const doc = readManagedDoc(cwd, scope);
+          if (doc.ok !== true) return failure(doc);
           const summary = String(args.summary ?? "").trim();
           if (summary.length === 0) return { text: "action=update requires summary." };
+          const recheck = architectureDocAccess(cwd, scope);
+          if (recheck.ok !== true) return { text: architectureRefusalText(recheck.reason, "en") + " (" + scope + ")" };
           const changedFiles = String(args.changedFiles ?? "").split(",").map((item) => item.trim()).filter((item) => item.length > 0);
-          const mutation = mutateArchitectureDocument(target.absolute, (current) => {
+          const mutation = mutateArchitectureDocument(doc.target.absolute, (current) => {
             if (current === null) return null;
             const next = appendArchitectureUpdate(current, { scope, summary, changedFiles });
             const validation = verifyArchitectureDoc(next);
             if (!validation.ok) throw new Error("invalid architecture doc: " + validation.errors.join("; "));
             return next;
           });
-          if (!mutation.changed) return { text: "missing: " + target.relative };
+          if (!mutation.changed) return { text: "missing: " + doc.target.relative };
+          const baseline = updateArchitectureBaseline(cwd, scope);
           rememberArchitectureScope(exec.agent, scope);
-          if (mutation.changed) updateArchitectureBaseline(cwd, scope);
-          return { text: "updated: " + target.relative };
+          return { text: "updated: " + doc.target.relative + (baseline.written === false && baseline.reason !== null ? "; document updated but the baseline record failed; check the log" : "") };
         }
         return { text: "Unknown action: " + action + " (use check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage)." };
       } catch (error) {
@@ -533,6 +632,7 @@ export function apply(ctx, config = {}) {
       }
     },
   });
+
   const handler = async (invocation) => {
     const cwd = workspaceOf(invocation.agent);
     const raw = invocation.rawInput.trim();
@@ -654,88 +754,109 @@ export function apply(ctx, config = {}) {
           const action = (rest[0] ?? 'check').toLowerCase();
           const scope = rest[1] ?? '.';
           try {
-            const target = resolveArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-            if (action === 'check') {
-              if (!existsSync(target.absolute)) return { kind: 'success', text: '不存在：' + target.relative };
-              const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-              const stat = statSync(target.absolute);
-              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(cwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
-              const verification = verifyArchitectureDoc(doc === null ? '' : doc.text);
-              const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-              return { kind: 'success', text: '已存在：' + target.relative + '；对齐=' + (aligned ? 'aligned' : 'stale') + '；变化分=' + change.score + '；检测=' + change.method + '；attestation=' + (verification.attestation === null ? 'missing' : verification.attestation.revision) + '；consistent=' + verification.ok };
-            }
+            const access = architectureDocAccess(cwd, scope);
             const patterns = rest.slice(2).join(' ').split(/[,\s]+/).map((item) => item.trim()).filter((item) => item.length > 0);
             if (action === 'manage') {
+              if (access.reason === 'invalid-scope') return { kind: 'error', text: 'scope 格式无效：' + scope };
+              if (access.reason === 'corrupt-registry') return { kind: 'error', text: '架构规则文件损坏，无法判断权限；请检查或恢复 registry。' };
               const rules = architectureScopeRules(cwd, scope);
               return { kind: 'success', text: rules === null ? 'scope 未受管：' + scope : 'scope=' + scope + '；include=' + JSON.stringify(rules.include ?? []) + '；exclude=' + JSON.stringify(rules.exclude ?? []) };
             }
             if (action === 'include' || action === 'exclude' || action === 'unmanage') {
+              if (access.reason === 'invalid-scope') return { kind: 'error', text: 'scope 格式无效：' + scope };
               if ((action === 'include' || action === 'exclude') && patterns.some((pattern) => !isValidScopePattern(pattern))) return { kind: 'error', text: '无效的 scope pattern。' };
               if (action !== 'unmanage' && patterns.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity architecture ' + action + ' <scope> <pattern>' };
-              let rules = null;
-              if (action === 'unmanage' && patterns.length === 0) {
-                removeArchitectureScope(cwd, cfg.indexDir, scope);
-              } else {
-                updateArchitectureScopeRules(cwd, cfg.indexDir, scope, { include: action === 'include' ? patterns : [], exclude: action === 'exclude' ? patterns : [], removeInclude: action === 'unmanage' ? patterns : [], removeExclude: action === 'unmanage' ? patterns : [] });
-                rules = architectureScopeRules(cwd, scope);
-                if (existsSync(target.absolute)) refreshArchitectureDocument(cwd, scope);
-                rememberArchitectureScope(invocation.agent, scope);
+              try {
+                if (action === 'unmanage' && patterns.length === 0) {
+                  removeArchitectureScope(cwd, cfg.indexDir, scope);
+                } else {
+                  updateArchitectureScopeRules(cwd, cfg.indexDir, scope, { include: action === 'include' ? patterns : [], exclude: action === 'exclude' ? patterns : [], removeInclude: action === 'unmanage' ? patterns : [], removeExclude: action === 'unmanage' ? patterns : [] });
+                }
+              } catch (error) {
+                const reason = classifyRegistryWriteError(error);
+                return { kind: 'error', text: '架构规则未更新：' + registryWriteReasonText(reason, 'zh') + '。' };
               }
-              return { kind: 'success', text: action + '：scope=' + scope + '；include=' + JSON.stringify(rules?.include ?? []) + '；exclude=' + JSON.stringify(rules?.exclude ?? []) };
+              // Re-read the registry instead of reusing the in-memory result,
+              // then decide access and only then touch the document.
+              const fresh = architectureDocAccess(cwd, scope);
+              const rules = architectureScopeRules(cwd, scope);
+              const summary = action + '：scope=' + scope + '；include=' + JSON.stringify(rules?.include ?? []) + '；exclude=' + JSON.stringify(rules?.exclude ?? []);
+              if (fresh.ok !== true) {
+                return { kind: 'success', text: summary + '；架构文档访问已拒绝：' + architectureRefusalText(fresh.reason, 'zh') + '。' };
+              }
+              rememberArchitectureScope(invocation.agent, scope);
+              const doc = readManagedDoc(cwd, scope);
+              if (doc.ok !== true) return { kind: 'success', text: summary };
+              const refreshed = refreshArchitectureDocument(cwd, scope);
+              return { kind: 'success', text: summary + (refreshed.ok === true ? '；已刷新结构。' : '；刷新失败：' + architectureRefusalText(refreshed.reason, 'zh') + '。') };
+            }
+            if (access.ok !== true) return { kind: 'error', text: architectureRefusalText(access.reason, 'zh') + '（' + scope + '）' };
+            const failure = (result) => ({ kind: 'error', text: architectureFailureText(result, 'zh') });
+            if (action === 'check') {
+              const doc = readManagedDoc(cwd, scope);
+              if (doc.ok !== true) return failure(doc);
+              const stat = statSync(doc.target.absolute);
+              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+              const verification = verifyArchitectureDoc(doc.doc.text);
+              const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
+              return { kind: 'success', text: '已存在：' + doc.target.relative + '；对齐=' + (aligned ? 'aligned' : 'stale') + '；变化分=' + change.score + '；检测=' + change.method + '；attestation=' + (verification.attestation === null ? 'missing' : verification.attestation.revision) + '；consistent=' + verification.ok };
             }
             if (action === 'read') {
-              const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-              return doc === null
-                ? { kind: 'error', text: `不存在：${target.relative}` }
-                : { kind: 'success', text: clampText(doc.text, 8000) };
+              const doc = readManagedDoc(cwd, scope);
+              return doc.ok !== true ? failure(doc) : { kind: 'success', text: clampText(doc.doc.text, 8000) };
             }
             if (action === 'create') {
               const created = createArchitectureDocument(cwd, scope);
+              if (created.ok !== true) return { kind: 'error', text: architectureRefusalText(created.reason, 'zh') + '（' + scope + '）' };
               rememberArchitectureScope(invocation.agent, scope);
-              return { kind: 'success', text: created.created ? `已创建：${created.target.relative}` : `已存在：${created.target.relative}` };
+              return { kind: 'success', text: created.created ? '已创建：' + created.target.relative : '已存在：' + created.target.relative };
             }
             if (action === 'status') {
-              const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-              if (doc === null) return { kind: 'error', text: `不存在：${target.relative}` };
-              const stat = statSync(target.absolute);
-              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(cwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
-              const docVerification = verifyArchitectureDoc(doc.text);
+              const doc = readManagedDoc(cwd, scope);
+              if (doc.ok !== true) return failure(doc);
+              const stat = statSync(doc.target.absolute);
+              const change = detectSemanticChanges(cwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: stat.mtimeMs - 1000, filterFile: architectureManagedFilter(cwd, scope) ?? undefined });
+              const docVerification = verifyArchitectureDoc(doc.doc.text);
               const aligned = !change.forced && change.score < cfg.architectureRefreshThreshold;
-              return { kind: 'success', text: `对齐状态：${aligned ? "aligned" : "stale"}；变化分=${change.score}；检测=${change.method}；强制=${change.forced}；阈值=${cfg.architectureRefreshThreshold}；更新时间=${new Date(stat.mtimeMs).toISOString()}；路径=${target.relative}；attestation=${docVerification.attestation === null ? "missing" : docVerification.attestation.revision}；consistent=${docVerification.ok}；entries=${docVerification.entryCount}` };
+              return { kind: 'success', text: '对齐状态：' + (aligned ? "aligned" : "stale") + '；变化分=' + change.score + '；检测=' + change.method + '；强制=' + change.forced + '；阈值=' + cfg.architectureRefreshThreshold + '；更新时间=' + new Date(stat.mtimeMs).toISOString() + '；路径=' + doc.target.relative + '；attestation=' + (docVerification.attestation === null ? "missing" : docVerification.attestation.revision) + '；consistent=' + docVerification.ok + '；entries=' + docVerification.entryCount };
             }
             if (action === 'verify') {
-              const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-              if (doc === null) return { kind: 'error', text: '不存在：' + target.relative };
-              const verification = verifyArchitectureDoc(doc.text);
+              const doc = readManagedDoc(cwd, scope);
+              if (doc.ok !== true) return failure(doc);
+              const verification = verifyArchitectureDoc(doc.doc.text);
               return { kind: 'success', text: 'verify：' + (verification.ok ? 'ok' : 'failed') + '；entries=' + verification.entryCount + '；structureHash=' + verification.structureHash + '；updateLogHash=' + verification.updateLogHash + '；errors=' + verification.errors.join(' | ') };
             }
             if (action === 'refresh') {
               const refreshed = refreshArchitectureDocument(cwd, scope);
+              if (refreshed.ok !== true) return { kind: 'error', text: architectureRefusalText(refreshed.reason, 'zh') + '（' + scope + '）' };
               rememberArchitectureScope(invocation.agent, scope);
-              return { kind: 'success', text: `已刷新结构：${refreshed.target.relative}` };
+              return { kind: 'success', text: '已刷新结构：' + refreshed.target.relative + (refreshed.baselineWritten === false && refreshed.baselineReason !== null ? '；文档已更新，但基线记录写入失败；请检查日志。' : '') };
             }
             if (action === 'update') {
-              const doc = readArchitectureDoc(cwd, scope, managedDocNameFor(cwd, scope));
-              if (doc === null) return { kind: 'error', text: `不存在：${target.relative}` };
+              const doc = readManagedDoc(cwd, scope);
+              if (doc.ok !== true) return failure(doc);
               const summary = rest.slice(2).join(' ').trim();
               if (summary.length === 0) return { kind: 'error', text: '用法：/compaction-fidelity architecture update <scope> <summary>' };
-              const mutation = mutateArchitectureDocument(target.absolute, (current) => {
+              const recheck = architectureDocAccess(cwd, scope);
+              if (recheck.ok !== true) return { kind: 'error', text: architectureRefusalText(recheck.reason, 'zh') + '（' + scope + '）' };
+              const mutation = mutateArchitectureDocument(doc.target.absolute, (current) => {
                 if (current === null) return null;
                 const next = appendArchitectureUpdate(current, { scope, summary, changedFiles: [] });
                 const validation = verifyArchitectureDoc(next);
                 if (!validation.ok) throw new Error('架构文档校验失败：' + validation.errors.join('; '));
                 return next;
               });
-              if (!mutation.changed) return { kind: 'error', text: `不存在：${target.relative}` };
-              if (mutation.changed) updateArchitectureBaseline(cwd, scope);
+              if (!mutation.changed) return { kind: 'error', text: '不存在：' + doc.target.relative };
+              const baseline = updateArchitectureBaseline(cwd, scope);
               rememberArchitectureScope(invocation.agent, scope);
-              return { kind: 'success', text: `已追加更新：${target.relative}` };
+              return { kind: 'success', text: '已追加更新：' + doc.target.relative + (baseline.written === false && baseline.reason !== null ? '；文档已更新，但基线记录写入失败；请检查日志。' : '') };
             }
             return { kind: 'error', text: '用法：/compaction-fidelity architecture check | read | create | refresh | status | verify | update | include | exclude | manage | unmanage <scope> [summary|pattern]' };
           } catch (error) {
-            return { kind: 'error', text: `架构文档命令失败：${error instanceof Error ? error.message : String(error)}` };
+            return { kind: 'error', text: '架构文档命令失败：' + (error instanceof Error ? error.message : String(error)) };
           }
         }
+
         case 'purge': {
           if (!rest.includes('--yes')) return { kind: 'error', text: `这会删除 ${cwd}/${cfg.indexDir}。确认后运行 /compaction-fidelity purge --yes` };
           try {
@@ -878,9 +999,14 @@ export function apply(ctx, config = {}) {
                 if (preStepStopped(signal, decision)) return decision;
                 try {
                   const created = createArchitectureDocument(askedCwd, scope);
+                  architecturePending.delete(askedSession);
+                  if (created.ok !== true) {
+                    const refused = "[Compaction-Fidelity] 无法创建 " + scope + " 的架构文档：" + architectureRefusalText(created.reason, "zh") + "。";
+                    const message = createUserMessage({ content: [{ type: "text", text: refused }], source: PRODUCER_SOURCE });
+                    return { ...decision, messages: [...(decision?.messages ?? []), message] };
+                  }
                   rememberArchitectureScope(agent, scope);
                   architectureAsked.add(pending.key);
-                  architecturePending.delete(askedSession);
                   const notice = created.created
                     ? "[Compaction-Fidelity] 已创建 " + created.target.relative + "。"
                     : "[Compaction-Fidelity] 已存在 " + created.target.relative + "。";
@@ -902,8 +1028,11 @@ export function apply(ctx, config = {}) {
                   text = "[Compaction-Fidelity] 检测到多个候选任务文件夹：" + choice.map((item) => item.relativeDir).join(" / ") + "。请先向用户确认主项目文件夹，再调用 compaction-fidelity-architecture 创建 " + cfg.architectureDocName + "。";
                 } else {
                   const target = detection.primary;
-                  const doc = resolveArchitectureDoc(askedCwd, target.relativeDir, managedDocNameFor(askedCwd, target.relativeDir));
-                  if (!existsSync(doc.absolute)) text = "[Compaction-Fidelity] 请先向用户确认：是否在 " + target.relativeDir + " 文件夹下创建 " + cfg.architectureDocName + " 用于记录项目架构和长期压缩工作细节上下文有损压缩后回查（该文件思路源于AOCI，建议在大型多处耦合项目或预计将执行多次修改时启用，有本次询问是因为你启用了dsh-compaction-fidelity）";
+                  const access = architectureDocAccess(askedCwd, target.relativeDir);
+                  if (access.ok === true) {
+                    const doc = readManagedDoc(askedCwd, target.relativeDir);
+                    if (doc.ok !== true && doc.reason === "missing") text = "[Compaction-Fidelity] 请先向用户确认：是否在 " + target.relativeDir + " 文件夹下创建 " + cfg.architectureDocName + " 用于记录项目架构和长期压缩工作细节上下文有损压缩后回查（该文件思路源于AOCI，建议在大型多处耦合项目或预计将执行多次修改时启用，有本次询问是因为你启用了dsh-compaction-fidelity）";
+                  }
                 }
                 if (text.length > 0) {
                   architectureAsked.add(key);
@@ -921,22 +1050,27 @@ export function apply(ctx, config = {}) {
                   const message = createUserMessage({ content: [{ type: "text", text }], source: PRODUCER_SOURCE });
                   return { ...decision, messages: [...(decision?.messages ?? []), message] };
                 }
-                if (!detection.ambiguous) rememberArchitectureScope(agent, detection.primary.relativeDir);
+                if (!detection.ambiguous) {
+                  const primaryAccess = architectureDocAccess(askedCwd, detection.primary.relativeDir);
+                  if (primaryAccess.ok === true) rememberArchitectureScope(agent, detection.primary.relativeDir);
+                }
               }
             }
             const knownScopes = new Set(listArchitectureScopes(askedCwd));
             setBoundedMap(architectureScopes, askedSession, knownScopes, MAX_ARCHITECTURE_SESSIONS);
             if (knownScopes.size > 0) {
               for (const scope of knownScopes) {
-                const doc = resolveArchitectureDoc(askedCwd, scope, managedDocNameFor(askedCwd, scope));
-                if (!existsSync(doc.absolute)) continue;
+                const access = architectureDocAccess(askedCwd, scope);
+                if (access.ok !== true) continue;
+                const doc = readManagedDoc(askedCwd, scope);
+                if (doc.ok !== true) continue;
                 let docStat;
                 try {
-                  docStat = statSync(doc.absolute);
+                  docStat = statSync(doc.target.absolute);
                 } catch {
                   continue;
                 }
-                const change = cachedArchitectureChange(askedCwd, scope, { indexDir: cfg.indexDir, docName: managedDocNameFor(askedCwd, scope), singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
+                const change = cachedArchitectureChange(askedCwd, scope, { indexDir: cfg.indexDir, docName: access.target.docName, singleFileChangeThreshold: cfg.architectureSingleFileChangeThreshold, maxFiles: cfg.maxFiles, sinceMs: docStat.mtimeMs - 1000, filterFile: architectureManagedFilter(askedCwd, scope) ?? undefined });
                 if (!change.forced && change.score < cfg.architectureRefreshThreshold) continue;
                 const now = Date.now();
                 const reminderKey = architectureReminderKey(askedCwd, scope, docStat.mtimeMs);

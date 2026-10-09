@@ -5,13 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeArchitectureBaseline, detectSemanticChanges, writeArchitectureBaseline } from "../src/architecture-changes.mjs";
 import {
+  REGISTRY_FILE,
+  classifyRegistryWriteError,
   globToRegExp,
   isValidScopePattern,
   createGlobalWorkspaceFileFilter,
   createWorkspaceFileFilter,
+  managedDocOutcomeFor,
   managedDocTarget,
   managedScopeRules,
   matchesScopeRules,
+  mutateArchitectureRegistry,
   readArchitectureRegistry,
   registryFingerprint,
   retrievalPolicyFor,
@@ -336,5 +340,128 @@ test("a blank registry file is corrupt, not missing, and is never rebuilt", asyn
     assert.equal(readFileSync(registryFile, "utf8"), "   \n", "the blank file is left for a human, not rebuilt");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+
+test("managedDocOutcomeFor returns structured refusals with a null target", () => {
+  const empty = { version: 2, status: "valid", scopes: {} };
+  assert.deepEqual(managedDocOutcomeFor(".", { registry: empty }), {
+    ok: true,
+    reason: null,
+    target: { scope: ".", docName: "ARCHITECTURE.md", relative: "ARCHITECTURE.md" },
+  });
+  assert.equal(managedDocOutcomeFor("packages/app", { registry: empty }).ok, true);
+  assert.deepEqual(managedDocOutcomeFor("app", { registry: { version: 2, status: "valid", scopes: { app: { include: [], exclude: ["**"] } } } }), { ok: false, reason: "denied-scope", target: null });
+  assert.deepEqual(managedDocOutcomeFor("app", { registry: { version: 2, status: "valid", scopes: { ".": { include: [], exclude: ["app/**"] } } } }), { ok: false, reason: "denied-ancestor", target: null });
+  assert.deepEqual(managedDocOutcomeFor("app", { registry: { version: 2, status: "corrupt", scopes: {} } }), { ok: false, reason: "corrupt-registry", target: null });
+  assert.deepEqual(managedDocOutcomeFor("app", { loadRegistry: () => { throw new Error("io failure"); } }), { ok: false, reason: "corrupt-registry", target: null });
+  for (const bad of ["", "   ", "a\u0000b", "C:/x", "/abs", "../x", "a/../b", 42, null, undefined]) {
+    assert.deepEqual(managedDocOutcomeFor(bad, { registry: empty }), { ok: false, reason: "invalid-scope", target: null });
+  }
+  assert.equal(managedDocOutcomeFor("packages/app/", { registry: empty }).target.scope, "packages/app");
+});
+
+test("a refused document is never reported as missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-fidelity-outcome-missing-"));
+  try {
+    const outcome = managedDocOutcomeFor("app", {
+      loadRegistry: () => ({ version: 2, status: "valid", scopes: { app: { include: [], exclude: ["**"] } } }),
+    });
+    assert.equal(outcome.reason, "denied-scope");
+    assert.notEqual(outcome.reason, "missing");
+    assert.equal(outcome.target, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registry write failures keep distinct reasons", () => {
+  assert.equal(classifyRegistryWriteError(new Error("architecture document CAS conflict after 4 attempts: x")), "registry-cas-conflict");
+  assert.equal(classifyRegistryWriteError(new Error("architecture document lock timeout: x")), "registry-locked");
+  assert.equal(classifyRegistryWriteError(new Error("architecture registry is corrupt and must be repaired before it can be updated: x")), "corrupt-registry");
+  assert.equal(classifyRegistryWriteError(new Error("EACCES: permission denied")), "registry-write-failed");
+});
+
+test("a held registry lock reports registry-locked and leaves the file untouched", () => {
+  const lockRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-registry-lock-"));
+  try {
+    const dir = join(lockRoot, indexDir);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, REGISTRY_FILE);
+    const original = JSON.stringify({ version: 2, scopes: { app: { doc: "ARCHITECTURE.md", include: [], exclude: [] } } }, null, 2);
+    writeFileSync(file, original, "utf8");
+    writeFileSync(file + ".lock", JSON.stringify({ pid: 999999, at: Date.now(), token: "held" }), "utf8");
+    let reason = null;
+    try {
+      updateArchitectureScopeRules(lockRoot, indexDir, "app", { include: ["src/**"] }, { timeoutMs: 30, staleMs: 60000 });
+    } catch (error) {
+      reason = classifyRegistryWriteError(error);
+    }
+    assert.equal(reason, "registry-locked");
+    assert.equal(readFileSync(file, "utf8"), original);
+  } finally {
+    rmSync(lockRoot, { recursive: true, force: true });
+  }
+});
+
+test("a CAS conflict reports registry-cas-conflict without clobbering the concurrent write", () => {
+  const casRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-registry-cas-"));
+  try {
+    const dir = join(casRoot, indexDir);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, REGISTRY_FILE);
+    writeFileSync(file, JSON.stringify({ version: 2, scopes: { app: { doc: "ARCHITECTURE.md", include: [], exclude: [] } } }, null, 2), "utf8");
+    const concurrent = JSON.stringify({ version: 2, scopes: { other: { doc: "ARCHITECTURE.md", include: [], exclude: [] } } }, null, 2);
+    let reason = null;
+    try {
+      mutateArchitectureRegistry(casRoot, indexDir, (registry) => {
+        writeFileSync(file, concurrent, "utf8");
+        registry.scopes.app = { ...registry.scopes.app, include: ["src/**"] };
+        return registry;
+      }, { maxRetries: 0 });
+    } catch (error) {
+      reason = classifyRegistryWriteError(error);
+    }
+    assert.equal(reason, "registry-cas-conflict");
+    assert.equal(readFileSync(file, "utf8"), concurrent);
+  } finally {
+    rmSync(casRoot, { recursive: true, force: true });
+  }
+});
+
+test("a corrupt registry refuses rule updates instead of being rewritten", () => {
+  const corruptRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-registry-corrupt-"));
+  try {
+    const dir = join(corruptRoot, indexDir);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, REGISTRY_FILE);
+    const corrupt = "{ this is not json";
+    writeFileSync(file, corrupt, "utf8");
+    let reason = null;
+    try {
+      updateArchitectureScopeRules(corruptRoot, indexDir, "app", { exclude: ["src/**"] });
+    } catch (error) {
+      reason = classifyRegistryWriteError(error);
+    }
+    assert.equal(reason, "corrupt-registry");
+    assert.equal(readFileSync(file, "utf8"), corrupt);
+  } finally {
+    rmSync(corruptRoot, { recursive: true, force: true });
+  }
+});
+
+test("unmanage clears the rule and re-allows the scope", () => {
+  const scopeRoot = mkdtempSync(join(tmpdir(), "compaction-fidelity-registry-unmanage-"));
+  try {
+    updateArchitectureScopeRules(scopeRoot, indexDir, "app", { include: [], exclude: ["**"] });
+    const before = managedDocOutcomeFor("app", { loadRegistry: () => readArchitectureRegistry(scopeRoot, indexDir) });
+    assert.equal(before.ok, false);
+    assert.equal(before.reason, "denied-scope");
+    removeArchitectureScope(scopeRoot, indexDir, "app");
+    const after = managedDocOutcomeFor("app", { loadRegistry: () => readArchitectureRegistry(scopeRoot, indexDir) });
+    assert.equal(after.ok, true);
+  } finally {
+    rmSync(scopeRoot, { recursive: true, force: true });
   }
 });
