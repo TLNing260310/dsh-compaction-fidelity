@@ -1,6 +1,6 @@
 {
   "name": "dsh-compaction-fidelity",
-  "version": "0.3.1",
+  "version": "0.4.0-rc.1",
   "description": "Bilingual DSH compaction backend with lexical fidelity metrics, compensation, and project architecture retrieval.",
   "license": "MIT",
   "repository": {
@@ -41,6 +41,7 @@
     "docs/architecture-registry.md",
     "docs/release-status-0.3.0.md",
     "docs/release-status-0.3.1.md",
+    "docs/release-status-0.4.0-rc.1.md",
     "licenses/**",
     "README.md",
     "README.zh.md",

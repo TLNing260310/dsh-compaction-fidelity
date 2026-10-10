@@ -2,7 +2,7 @@
 
 > 项目名与包名：`dsh-compaction-fidelity`；定位：DSH 上下文压缩保真层。
 
-面向社区版 **DSH Desktop 2.0.17** 所内嵌 **DeepSeek Harness 0.2.0-rc.2** 运行时的 Profile Bundle：双语压缩引擎 + 跨语言保真指纹与补偿 + 项目架构回查锚点 + 动态压缩线。版本、迁移、预算、验证与分发状态见 [0.3.1 发布状态](docs/release-status-0.3.1.md)，真实三后端评测设计见 [配对评测协议](docs/paired-evaluation-protocol.zh.md)。
+面向社区版 **DSH Desktop 2.0.17** 所内嵌 **DeepSeek Harness 0.2.0-rc.2** 运行时的 Profile Bundle：双语压缩引擎 + 跨语言保真指纹与补偿 + 项目架构回查锚点 + 动态压缩线。版本、迁移、预算、验证与分发状态见 [0.3.1 发布状态](docs/release-status-0.3.1.md)（稳定版）与 [0.4.0-rc.1 测试候选状态](docs/release-status-0.4.0-rc.1.md)，真实三后端评测设计见 [配对评测协议](docs/paired-evaluation-protocol.zh.md)。
 
 ## 项目目的
 
@@ -331,7 +331,8 @@ TESTBOX
 
 插件版本与适配的 Harness 版本解耦。Harness 兼容性由精确的 `@deepseek-ai/dsh` peer 声明。
 
-- 当前版本：`0.3.1`
+- 当前稳定版：`0.3.1`
+- 测试候选：`0.4.0-rc.1`（GitHub prerelease；未发布 npm、未进入市场）
 - 适配 Harness：`@deepseek-ai/dsh@0.2.0-rc.2`（社区 DSH Desktop 2.0.17）
 - 历史预发布版本使用 `<harness-version>.plugin.<n>`，例如 `0.2.0-rc.2.plugin.1.25`
 - Harness 兼容范围变化时，插件 SemVer 继续单调递增，更新 peer 并在 CHANGELOG.md 记录映射；不再把 Harness 版本写进插件版本号

@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-rc.1 (2026-10-09) — test candidate
 
-Post-audit hardening on top of 0.3.1. This section implies no version bump, tag, or publication.
+Post-audit hardening on top of 0.3.1, published only as a GitHub prerelease for testing. It is not the current stable release, is not published to npm, and must not be pointed at by npm `latest` or the Desktop marketplace. `v0.3.1` keeps its existing stable identity.
 
 ### Read policy is fail-closed
 
